@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
+
+# Secrets (aucune clé API utilisée, mais au cas où)
+.env
+.env.local
+*.key
+secrets.toml
+
+# Données sensibles Attijari (rapports internes, exports bruts)
+data/raw/
+data/private/
+*.xlsx~$*
