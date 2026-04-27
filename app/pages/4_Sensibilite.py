@@ -12,10 +12,11 @@ from app.core.engine import (
     AIDecisionEngine,
     ComplianceModule,
     ForexAnalysisModule,
-    MarketDataModule,
     RiskManagementModule,
     TreasuryManagementModule,
 )
+from app.core.market_data import fetch_history_ohlc
+from app.core.yfinance_pairs import SIMULATED_BASE_PRICES
 from components.branding import (
     COLORS,
     inject_global_css,
@@ -23,6 +24,7 @@ from components.branding import (
     render_footer,
     render_header,
 )
+from components.charts import sensitivity_grid
 from components.gauges import global_score_gauge
 
 st.set_page_config(page_title="Sensibilité", page_icon="🎚", layout="wide")
@@ -115,14 +117,13 @@ risk = RiskManagementModule()
 compliance = ComplianceModule()
 engine = AIDecisionEngine()
 
-# Forex : on rejoue sur l'historique du marché déjà disponible ou on simule vite
-history = st.session_state.get("market_history", {}).get(op["pair"], [])
-if len(history) < 5:
-    market = MarketDataModule(pair=op["pair"], use_api=False)
-    for _ in range(20):
-        market.get_realtime_or_simulated_rate()
-    history = market.price_history
-current_rate = history[-1]
+# Forex : historique réel yfinance (cache partagé avec la page Marché)
+df_hist = fetch_history_ohlc(op["pair"], period="3mo")
+if df_hist.empty:
+    history = [SIMULATED_BASE_PRICES.get(op["pair"], 1.0)]
+else:
+    history = df_hist["Close"].tolist()
+current_rate = float(history[-1])
 forex_result = forex.generate_signal(current_rate, history)
 
 # Trésorerie : applique la variation au net cash
@@ -196,5 +197,71 @@ st.info(
     "conditions de marché.",
     icon="🎓",
 )
+
+# ==========================================================
+# Courbes de sensibilité (item #14) — score = f(paramètre)
+# ==========================================================
+st.divider()
+st.subheader("📉 Courbes de sensibilité — score global vs chaque paramètre")
+st.caption(
+    "Pour chaque paramètre, on fait varier sa valeur sur 21 points autour du point courant ; "
+    "tous les autres paramètres sont gelés. Les pointillés horizontaux marquent les seuils "
+    "BUY (+0.5) et SELL (−0.5). Le rond noir = position actuelle des sliders."
+)
+
+
+def _score_at(inflation_, exposure_, liquidity_, lcr_, cb_rate_, cash_delta_):
+    """Recalcule le score global avec les paramètres donnés."""
+    forex_r = forex.generate_signal(current_rate, history)
+    net_d = (base_treasury["net_cash"] * cash_delta_ / 100)
+    treasury_r = treasury.evaluate_treasury_position(
+        base_treasury["cash_inflow"] + max(0, net_d),
+        base_treasury["cash_outflow"] + max(0, -net_d),
+        liquidity_, base_treasury["interbank_rate"],
+    )
+    risk_r = risk.assess_risk(inflation_, cb_rate_, forex_r["volatility"], exposure_)
+    compliance_r = compliance.check_compliance(
+        lcr_, pos_after["eur"], pos_after["usd"],
+        base_compliance["position_limit"], exposure_,
+    )
+    return engine.combine_decisions(forex_r, treasury_r, risk_r, compliance_r)["global_score"]
+
+
+def _sweep(label, base, lo, hi, n=21, **fixed_kwargs):
+    xs = [lo + (hi - lo) * i / (n - 1) for i in range(n)]
+    ys = []
+    for x in xs:
+        kwargs = dict(
+            inflation_=inflation, exposure_=exposure, liquidity_=liquidity,
+            lcr_=lcr, cb_rate_=cb_rate, cash_delta_=cash_delta,
+        )
+        kwargs.update(fixed_kwargs)
+        kwargs[label] = x
+        ys.append(_score_at(**kwargs))
+    base_y = _score_at(
+        inflation_=inflation, exposure_=exposure, liquidity_=liquidity,
+        lcr_=lcr, cb_rate_=cb_rate, cash_delta_=cash_delta,
+    )
+    return xs, ys, base, base_y
+
+
+curves = []
+for label, key, lo, hi, base in [
+    ("Inflation (%)", "inflation_", max(0, base_risk["inflation"] - 5), base_risk["inflation"] + 5,
+     inflation),
+    ("Taux directeur BCT (%)", "cb_rate_", max(0, base_risk["central_bank_rate"] - 5),
+     base_risk["central_bank_rate"] + 5, cb_rate),
+    ("Niveau d'exposition", "exposure_", max(0, base_risk["exposure_level"] - 0.4),
+     min(1.0, base_risk["exposure_level"] + 0.4), exposure),
+    ("Niveau de liquidité", "liquidity_",
+     max(0, base_treasury["liquidity_level"] - 0.4),
+     min(1.0, base_treasury["liquidity_level"] + 0.4), liquidity),
+    ("LCR", "lcr_", max(0, base_compliance["lcr"] - 0.5), base_compliance["lcr"] + 0.5, lcr),
+    ("Variation cash net (%)", "cash_delta_", -100.0, 100.0, cash_delta),
+]:
+    xs, ys, base_x, base_y = _sweep(key, base, lo, hi)
+    curves.append({"label": label, "x": xs, "y": ys, "base_x": base_x, "base_y": base_y})
+
+st.plotly_chart(sensitivity_grid(curves), width='stretch')
 
 render_footer()

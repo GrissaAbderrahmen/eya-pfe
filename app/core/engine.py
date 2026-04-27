@@ -1,22 +1,28 @@
 """
 AI-Based Trading Room Decision Support System — Attijari Bank (PFE Eya).
 
-Modules:
-    1. MarketDataModule
-    2. ForexAnalysisModule
-    3. TreasuryManagementModule
-    4. RiskManagementModule
-    5. ComplianceModule         (ajouté — absent du prototype initial)
-    6. AIDecisionEngine         (refactor — applique la formule pondérée du cahier de charges)
+Architecture en 7 modules (cf. cahier des charges) :
+    1. DataCollectionModule        — Collecte des données yfinance (infrastructure)
+    2. MarketDataModule            — Legacy / fallback simulation (compat)
+    3. ForexAnalysisModule         — Analyse technique (poids 40%)
+    4. TreasuryManagementModule    — Gestion de trésorerie (poids 25%)
+    5. RiskManagementModule        — Évaluation du risque (poids 25%)
+    6. ComplianceModule            — Conformité réglementaire BCT (poids 10%)
+    7. AIDecisionEngine            — Moteur de décision pondéré (infrastructure)
+    +  TraderInteractionModule     — Chat IA Gemini (cf. app/core/chat.py)
 
 Formule du moteur de décision (cahier de charges) :
     Score global = Forex×0.4 + Trésorerie×0.25 + Risque×0.25 + Conformité×0.1
     Seuils       : > +0.5 → BUY   | < -0.5 → SELL   | sinon HOLD
     Bloqueurs    : Risque HIGH OU Conformité NON_COMPLIANT → HOLD forcé
+
+Niveau de confiance (v2, 2026-04) :
+    confidence = 30 + 50·|score global| + 20·accord_modules
+    Cap à 25 si décision bloquée. Range 30-100 sinon.
 """
 
 import random
-from statistics import mean, stdev
+from statistics import mean, pstdev, stdev
 
 try:
     import requests
@@ -32,10 +38,17 @@ class MarketDataModule:
         self.pair = pair
         self.use_api = use_api
         self.price_history = []
+        # Fallback ultime si yfinance et l'API échouent. Étendu aux 8 paires
+        # supportées par le système (cf. yfinance_pairs.SIMULATED_BASE_PRICES).
         self.simulated_prices = {
             "EUR/USD": 1.09,
-            "USD/TND": 3.10,
             "EUR/TND": 3.38,
+            "USD/TND": 3.10,
+            "GBP/USD": 1.27,
+            "GBP/TND": 3.95,
+            "USD/JPY": 154.0,
+            "USD/CHF": 0.91,
+            "EUR/GBP": 0.86,
         }
 
     def get_realtime_or_simulated_rate(self):
@@ -249,20 +262,42 @@ class ComplianceModule:
 
     def check_compliance(self, lcr, position_eur, position_usd,
                          position_limit, exposure_level):
-        flags = []
+        flags = []     # violations dures (font basculer le statut)
+        warnings = []  # bandes proches du seuil — informatives, n'impactent pas le statut
 
+        # --- LCR ---
         if lcr < 1.00:
-            flags.append(f"LCR à {lcr * 100:.0f}% (< 100%)")
+            flags.append(
+                f"LCR à {lcr * 100:.0f}% — sous le seuil réglementaire BCT de 100%"
+            )
+        elif lcr < 1.10:
+            warnings.append(
+                f"LCR à {lcr * 100:.0f}% — proche du seuil réglementaire (zone 100-110%)"
+            )
+
+        # --- Positions par devise ---
         if abs(position_eur) > position_limit:
             flags.append(
-                f"Position EUR ({position_eur:,.0f}) au-dessus de la limite ({position_limit:,.0f})"
+                f"Position EUR ({position_eur:,.0f}) dépasse la limite par devise "
+                f"({position_limit:,.0f})"
             )
         if abs(position_usd) > position_limit:
             flags.append(
-                f"Position USD ({position_usd:,.0f}) au-dessus de la limite ({position_limit:,.0f})"
+                f"Position USD ({position_usd:,.0f}) dépasse la limite par devise "
+                f"({position_limit:,.0f})"
             )
+
+        # --- Exposition globale ---
         if exposure_level > 0.80:
-            flags.append(f"Exposition à {exposure_level * 100:.0f}% (> 80%)")
+            flags.append(
+                f"Exposition globale à {exposure_level * 100:.0f}% — au-dessus du "
+                f"plafond BCT de 80%"
+            )
+        elif exposure_level > 0.70:
+            warnings.append(
+                f"Exposition globale à {exposure_level * 100:.0f}% — proche du plafond "
+                f"(zone 70-80%)"
+            )
 
         if not flags:
             status, score = "COMPLIANT", 1.0
@@ -274,6 +309,7 @@ class ComplianceModule:
         return {
             "status": status,
             "flags": flags,
+            "warnings": warnings,
             "compliance_score": score,
             "lcr": lcr,
             "position_eur": position_eur,
@@ -348,16 +384,33 @@ class AIDecisionEngine:
         decision_blocked = bool(blocking_reasons)
         final_decision = "HOLD" if decision_blocked else soft_decision
 
-        confidence = 50 + abs(global_score) * 100
+        # Confiance v2 (2026-04) — formule à 3 facteurs :
+        #   - magnitude   : |score global| ∈ [0, 1]   (50 pts max)
+        #   - agreement   : 1 - écart-type des scores normalisés (20 pts max)
+        #   - base        : 30 pts incompressibles (un score est toujours informatif)
+        # Cap à 25 si la décision est bloquée par risque ou non-conformité.
+        ns_values = list({"forex": n_forex, "treasury": n_treasury,
+                          "risk": n_risk, "compliance": n_compliance}.values())
+        magnitude = min(1.0, abs(global_score))
+        agreement = max(0.0, 1.0 - pstdev(ns_values))  # std max ≈ 1 si scores opposés
+        confidence = 30.0 + 50.0 * magnitude + 20.0 * agreement
         if decision_blocked:
-            confidence = 20.0
+            confidence = min(confidence, 25.0)
         confidence = max(0.0, min(100.0, round(confidence, 1)))
+        confidence_breakdown = {
+            "base": 30.0,
+            "magnitude_pts": round(50.0 * magnitude, 1),
+            "agreement_pts": round(20.0 * agreement, 1),
+            "magnitude_factor": round(magnitude, 3),
+            "agreement_factor": round(agreement, 3),
+        }
 
         return {
             "final_decision": final_decision,
             "soft_decision": soft_decision,
             "global_score": round(global_score, 4),
             "confidence_score": confidence,
+            "confidence_breakdown": confidence_breakdown,
             "decision_blocked": decision_blocked,
             "blocking_reasons": blocking_reasons,
             "normalized_scores": {
@@ -375,7 +428,70 @@ class AIDecisionEngine:
 
 
 # =========================================================
-# 7) TESTS (étendus)
+# 7) MODULES D'INFRASTRUCTURE — packaging académique 7 modules
+# =========================================================
+class DataCollectionModule:
+    """Module 1 — Collecte des données. Wrap yfinance + cache.
+
+    Module d'infrastructure (poids 0% dans le score). Sa qualité conditionne
+    cependant la fiabilité de tous les autres modules : sans historique, le
+    Forex et le Risque retournent leur valeur neutre.
+    """
+
+    def __init__(self):
+        # Import paresseux pour éviter une dépendance dure à yfinance dans les tests
+        from .market_data import fetch_history_ohlc, fetch_latest_rate
+        self._fetch_history = fetch_history_ohlc
+        self._fetch_latest = fetch_latest_rate
+
+    def fetch_history(self, pair: str, period: str = "3mo"):
+        return self._fetch_history(pair, period)
+
+    def fetch_latest_rate(self, pair: str):
+        return self._fetch_latest(pair)
+
+    @staticmethod
+    def assess_data_quality(history_length: int) -> dict:
+        """Score de qualité [0, 1] basé sur la longueur de l'historique disponible."""
+        ratio = min(1.0, history_length / 30.0)
+        if ratio >= 1.0:
+            label = "HIGH"
+        elif ratio >= 0.5:
+            label = "MEDIUM"
+        else:
+            label = "LOW"
+        return {"history_length": history_length, "quality_ratio": round(ratio, 3),
+                "quality_label": label}
+
+
+# Alias sémantique pour la documentation académique :
+# le moteur de décision est aussi appelé "Moteur de décision intelligent"
+# dans le tableau des 7 modules de la page d'accueil.
+IntelligentDecisionEngine = AIDecisionEngine
+
+
+class TraderInteractionModule:
+    """Module 7 — Interaction trader (chat IA Gemini).
+
+    Le wrapping concret de Gemini est dans `app/core/chat.py` ; cette classe
+    sert juste de point d'entrée nommé pour la présentation académique des
+    7 modules. Module d'infrastructure (poids 0% dans le score).
+    """
+
+    def __init__(self):
+        from .chat import ChatService
+        self._chat = ChatService()
+
+    def ask(self, question: str, simulation_context: dict | None = None) -> str:
+        return self._chat.ask(question, simulation_context)
+
+    def is_available(self) -> bool:
+        from .chat import ChatService
+        return ChatService.is_available()
+
+
+# =========================================================
+# 8) TESTS (étendus)
 # =========================================================
 def run_simple_tests():
     forex = ForexAnalysisModule()

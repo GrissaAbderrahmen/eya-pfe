@@ -12,6 +12,7 @@ import streamlit as st
 from components.branding import (
     COLORS,
     inject_global_css,
+    render_attijari_logo,
     render_footer,
     render_header,
 )
@@ -24,10 +25,11 @@ st.set_page_config(
 )
 
 inject_global_css()
+render_attijari_logo()
 
 render_header(
     title="Système d'aide à la décision — Salle de marché",
-    subtitle="PFE Licence en Gestion · Cas Attijari Bank Tunisie · Modèle académique",
+    subtitle="PFE Licence en Gestion · Cas Attijari Bank Tunisie · Prototype fonctionnel",
 )
 
 st.markdown(
@@ -37,20 +39,26 @@ st.markdown(
 Cet outil illustre le fonctionnement d'un **système d'aide à la décision** destiné aux traders
 d'une salle de marché bancaire. Il combine quatre dimensions financières pour recommander
 une action (achat / vente / attente) sur une opération de change, avec un **niveau de confiance**
-et des **contrôles de conformité réglementaire**.
+et des **contrôles de conformité réglementaire BCT**.
 
-#### Les 4 modules du modèle
+#### Architecture en 7 modules
 
-| Module | Rôle | Poids dans le score global |
-|---|---|:---:|
-| 📈 **Forex** | Analyse technique (MA, RSI, MACD, volatilité) | **40 %** |
-| 🏦 **Trésorerie** | Position de liquidité, flux net, taux interbancaire | **25 %** |
-| ⚠️ **Risque** | Inflation, taux directeur, volatilité, exposition | **25 %** |
-| 📋 **Conformité** | LCR ≥ 100 %, limites de position, exposition ≤ 80 % | **10 %** |
+| # | Module | Rôle | Type | Poids |
+|:-:|---|---|:-:|:-:|
+| 1 | 🛰️ **Collecte des données** | Récupération OHLC quotidien réel via Yahoo Finance | Infrastructure | — |
+| 2 | 📈 **Analyse Forex** | Indicateurs techniques : MA, RSI, MACD, volatilité | Décision | **40 %** |
+| 3 | 🏦 **Trésorerie** | Liquidité, flux net, taux interbancaire | Décision | **25 %** |
+| 4 | ⚠️ **Risque** | Inflation, taux directeur BCT, exposition, volatilité FX | Décision | **25 %** |
+| 5 | 📋 **Conformité BCT** | LCR ≥ 100 %, limites par devise, exposition ≤ 80 % | Décision | **10 %** |
+| 6 | 🤖 **Moteur de décision intelligent** | Agrège les 4 modules de décision via la formule pondérée | Infrastructure | — |
+| 7 | 💬 **Interaction trader (Chat IA)** | Chat Gemini en français contextualisé sur la simulation | Infrastructure | — |
+
+**Total des poids des modules de décision : 100 %.** Les modules d'infrastructure ne pèsent
+pas dans le score (ils alimentent ou exposent les résultats), mais ils sont essentiels au pipeline.
 
 #### Formule de décision
 
-> **Score global** = (Forex × 0.4) + (Trésorerie × 0.25) + (Risque × 0.25) + (Conformité × 0.1)
+> **Score global** = (Forex × 0.40) + (Trésorerie × 0.25) + (Risque × 0.25) + (Conformité × 0.10)
 
 - Si **Score > +0.5** → recommandation **ACHAT (BUY)**
 - Si **Score < −0.5** → recommandation **VENTE (SELL)**
@@ -58,44 +66,69 @@ et des **contrôles de conformité réglementaire**.
 
 **Bloqueurs durs** : en cas de risque élevé (HIGH) ou de non-conformité (NON_COMPLIANT),
 la décision est automatiquement forcée à HOLD, indépendamment du score.
+
+#### Niveau de confiance (formule v2)
+
+> **Confiance** = 30 (base) + 50 × |score global| + 20 × accord_modules
+
+L'accord vaut `1 - écart-type` des 4 scores normalisés. Plafonné à 25 % si la décision
+est bloquée. Une confiance élevée (>80 %) signifie un signal fort *et* un accord
+inter-modules — un cas idéal pour une décision avec engagement.
 """
 )
 
 st.divider()
 
-col1, col2, col3 = st.columns(3)
+st.markdown("### 🧭 Navigation")
+
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.info(
-        "**📈 Marché en temps réel**\n\nTaux EUR/USD et USD/TND · Moyenne mobile, RSI, MACD, volatilité.",
+        "**📈 Marché**\n\nOHLC quotidien, candlestick, indicateurs techniques sur 8 paires.",
         icon="📈",
     )
 with col2:
     st.info(
-        "**💱 Simulateur trader**\n\nEntrez une opération → obtenez une recommandation complète.",
+        "**💱 Simulateur**\n\nEntrez une opération → recommandation complète avec explication.",
         icon="💱",
     )
 with col3:
     st.info(
-        "**🤖 Décision IA**\n\nVoyez étape par étape comment la formule pondérée aboutit à la décision.",
+        "**🤖 Décision IA**\n\nDécomposition pas-à-pas de la formule pondérée et de la confiance.",
         icon="🤖",
     )
-
-st.markdown(" ")
-col4, col5 = st.columns(2)
 with col4:
     st.info(
-        "**🎚 Analyse de sensibilité**\n\nVariez chaque input de ±10 % et observez comment la décision évolue.",
+        "**🎚 Sensibilité**\n\nFaites varier chaque paramètre et observez la décision basculer.",
         icon="🎚",
     )
+
+col5, col6, col7, col8 = st.columns(4)
 with col5:
     st.info(
-        "**📄 Rapport PDF**\n\nExportez les résultats de la dernière simulation pour annexer au PFE.",
+        "**💬 Chat IA**\n\nPosez vos questions en français à l'assistant Gemini.",
+        icon="💬",
+    )
+with col6:
+    st.info(
+        "**📊 Backtest**\n\nValidez le modèle sur 6-12 mois d'historique : PnL, Sharpe, % gagnants.",
+        icon="📊",
+    )
+with col7:
+    st.info(
+        "**🌍 Risques par devise**\n\nVisualisez l'exposition de la banque par devise.",
+        icon="🌍",
+    )
+with col8:
+    st.info(
+        "**📄 Rapport PDF**\n\nExport complet : graphiques, tableaux, conclusion.",
         icon="📄",
     )
 
 st.markdown(" ")
 st.success(
-    "👈 Naviguez entre les pages via la barre latérale. Commencez par **Simulateur** pour la démo jury.",
+    "👈 Naviguez entre les pages via la barre latérale. Pour la démo jury : "
+    "**Marché → Simulateur → Décision IA → Sensibilité → Chat IA → Backtest → Rapport**.",
     icon="👉",
 )
 

@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 import streamlit as st
 
+from app.core.explainer import explain_decision
 from components.branding import (
     COLORS,
     inject_global_css,
@@ -183,6 +184,67 @@ st.markdown(
 </div>
 """,
     unsafe_allow_html=True,
+)
+
+# ==========================================================
+# ÉTAPE 6 — Niveau de confiance détaillé
+# ==========================================================
+st.subheader("Étape 6 · Décomposition du niveau de confiance")
+
+cb = decision.get("confidence_breakdown", {})
+if cb:
+    st.markdown(
+        f"""
+La confiance n'est **pas une constante** : elle dépend de la force du signal et de
+l'accord entre les modules. Formule :
+
+```
+confidence = 30 (base) + 50 × |score global| + 20 × accord_modules
+```
+
+| Composante | Valeur | Points |
+|---|:---:|:---:|
+| Base incompressible | — | **30.0** |
+| Magnitude du score (×50) | {cb.get('magnitude_factor', 0):.3f} | **{cb.get('magnitude_pts', 0):.1f}** |
+| Accord entre modules (×20) | {cb.get('agreement_factor', 0):.3f} | **{cb.get('agreement_pts', 0):.1f}** |
+| **Total** | | **{decision['confidence_score']:.1f} %** |
+
+L'**accord** vaut `1 - écart-type` des 4 scores normalisés. Quand tous les modules pointent
+dans le même sens, l'accord est élevé ; quand ils se contredisent, il chute.
+"""
+    )
+    if blocked:
+        st.warning(
+            f"Décision bloquée → la confiance est plafonnée à 25%. "
+            f"Valeur actuelle : **{decision['confidence_score']:.1f}%**.",
+            icon="⛔",
+        )
+
+# ==========================================================
+# ÉTAPE 7 — Conformité : motifs précis
+# ==========================================================
+compliance = sim.get("compliance", {})
+flags = compliance.get("flags", [])
+warnings = compliance.get("warnings", [])
+
+if flags or warnings:
+    st.subheader("Étape 7 · Contrôles de conformité — motifs précis")
+    if flags:
+        st.markdown("**🔴 Violations réglementaires :**")
+        for f in flags:
+            st.error(f, icon="⛔")
+    if warnings:
+        st.markdown("**🟡 Zones d'alerte (conforme mais proche du seuil) :**")
+        for w_msg in warnings:
+            st.warning(w_msg, icon="⚠️")
+
+# ==========================================================
+# ÉTAPE 8 — Explication en langage simple
+# ==========================================================
+st.subheader("Étape 8 · Explication en langage simple")
+st.info(
+    explain_decision(decision, sim["forex"], sim["treasury"], sim["risk"], compliance),
+    icon="💬",
 )
 
 # ==========================================================

@@ -130,7 +130,62 @@ def inject_global_css():
             font-size: 0.82rem;
             text-align: center;
         }
+
+        /* ---- Logo Attijari (CSS-only, pas de fichier image) ---- */
+        .ati-logo-wrap {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0 1rem 0;
+        }
+        .ati-logo-mark {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 46px;
+            height: 46px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #C8102E 0%, #8B0B20 100%);
+            color: white;
+            font-weight: 800;
+            font-size: 1.4rem;
+            letter-spacing: -0.02em;
+            box-shadow: 0 2px 6px rgba(200,16,46,0.25);
+        }
+        .ati-logo-text {
+            display: flex;
+            flex-direction: column;
+            line-height: 1.1;
+        }
+        .ati-logo-brand {
+            font-weight: 800;
+            font-size: 1.15rem;
+            color: #2B2B2B;
+            letter-spacing: 0.02em;
+        }
+        .ati-logo-tag {
+            font-size: 0.72rem;
+            color: #6C757D;
+            letter-spacing: 0.12em;
+            text-transform: uppercase;
+        }
         </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_attijari_logo() -> None:
+    """Logo Attijari Bank — CSS pur, pas de fichier image à embarquer."""
+    st.markdown(
+        """
+        <div class="ati-logo-wrap">
+            <div class="ati-logo-mark">A</div>
+            <div class="ati-logo-text">
+                <div class="ati-logo-brand">ATTIJARI BANK</div>
+                <div class="ati-logo-tag">Salle de marché · Tunis</div>
+            </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
@@ -154,7 +209,7 @@ def render_footer() -> None:
         """
         <div class="ati-footer">
             PFE — Système d'aide à la décision en salle de marché · Cas Attijari Bank Tunisie ·
-            Modèle académique, données partiellement simulées.
+            Prototype fonctionnel · Données de marché : Yahoo Finance.
         </div>
         """,
         unsafe_allow_html=True,

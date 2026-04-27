@@ -6,16 +6,21 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+from datetime import datetime
+
+import pandas as pd
 import streamlit as st
 
 from app.core.engine import (
     AIDecisionEngine,
     ComplianceModule,
     ForexAnalysisModule,
-    MarketDataModule,
     RiskManagementModule,
     TreasuryManagementModule,
 )
+from app.core.explainer import explain_decision
+from app.core.market_data import fetch_history_ohlc
+from app.core.yfinance_pairs import PAIRS, SIMULATED_BASE_PRICES
 from components.branding import (
     COLORS,
     inject_global_css,
@@ -93,6 +98,14 @@ SCENARIOS = {
         "lcr": 1.20, "position_eur": 400_000, "position_usd": 300_000,
         "position_limit": 2_000_000,
     },
+    "🇹🇳 Opération EUR/TND (cas tunisien)": {
+        "amount": 800_000, "pair": "EUR/TND", "direction": "Achat", "horizon": "1 mois",
+        "cash_inflow": 1_200_000, "cash_outflow": 950_000,
+        "liquidity_level": 0.65, "interbank_rate": 6.25,
+        "inflation": 6.8, "cb_rate": 8.0, "exposure_level": 0.55,
+        "lcr": 1.15, "position_eur": 600_000, "position_usd": 200_000,
+        "position_limit": 2_000_000,
+    },
     "⚠️ Marché stressé (HOLD attendu)": {
         "amount": 500_000, "pair": "EUR/USD", "direction": "Achat", "horizon": "1 mois",
         "cash_inflow": 900_000, "cash_outflow": 900_000,
@@ -134,8 +147,9 @@ with col_op1:
     amount = st.number_input("Montant (devise de base)", min_value=1_000, max_value=100_000_000,
                              value=P("amount", 500_000), step=10_000, format="%d")
 with col_op2:
-    pair = st.selectbox("Paire de devises", options=["EUR/USD", "USD/TND", "EUR/TND"],
-                        index=["EUR/USD", "USD/TND", "EUR/TND"].index(P("pair", "EUR/USD")))
+    default_pair = P("pair", "EUR/USD")
+    pair = st.selectbox("Paire de devises", options=PAIRS,
+                        index=PAIRS.index(default_pair) if default_pair in PAIRS else 0)
 with col_op3:
     direction = st.selectbox("Sens", options=["Achat", "Vente"],
                              index=0 if P("direction", "Achat") == "Achat" else 1)
@@ -201,15 +215,21 @@ analyse = st.button("🚀 **Analyser l'opération**", type="primary", width='str
 # 3) ANALYSE
 # ==========================================================
 if analyse:
-    # Marché — soit historique existant, soit simulation rapide
-    history = st.session_state.get("market_history", {}).get(pair, [])
-    if len(history) < 5:
-        market = MarketDataModule(pair=pair, use_api=False)
-        for _ in range(20):
-            market.get_realtime_or_simulated_rate()
-        history = market.price_history
+    # Marché — historique réel via yfinance (cache 1h). Si yfinance ne renvoie
+    # rien (paire indisponible ou réseau down), on retombe sur le taux de base
+    # simulé pour ne pas bloquer la démo jury.
+    df = fetch_history_ohlc(pair, period="3mo")
+    if df.empty:
+        st.warning(
+            f"yfinance n'a pas retourné de données pour {pair}. Utilisation d'une "
+            f"valeur de référence simulée — l'analyse Forex sera neutre.",
+            icon="⚠️",
+        )
+        history = [SIMULATED_BASE_PRICES.get(pair, 1.0)]
+    else:
+        history = df["Close"].tolist()
 
-    current_rate = history[-1]
+    current_rate = float(history[-1])
 
     # Position après l'opération (impact sur conformité)
     base = pair.split("/")[0]
@@ -251,6 +271,20 @@ if analyse:
         "decision": decision,
         "position_after": {"eur": pos_eur_after, "usd": pos_usd_after},
     }
+
+    # Historique des simulations (item #12) — FIFO, max 50 entrées
+    if "simulations_history" not in st.session_state:
+        st.session_state["simulations_history"] = []
+    st.session_state["simulations_history"].append({
+        "Date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Paire": pair,
+        "Sens": direction,
+        "Montant": amount,
+        "Score global": round(decision["global_score"], 3),
+        "Décision": decision["final_decision"],
+        "Confiance %": round(decision["confidence_score"], 1),
+    })
+    st.session_state["simulations_history"] = st.session_state["simulations_history"][-50:]
 
     # --- Résultats ---
     st.subheader("3 · Résultat de l'analyse")
@@ -304,19 +338,30 @@ if analyse:
         st.plotly_chart(liquidity_gauge(lcr), width='stretch')
     with col_flags:
         if compliance_result["flags"]:
-            st.markdown("**Flags levés :**")
+            st.markdown("**🔴 Violations réglementaires :**")
             for flag in compliance_result["flags"]:
-                st.warning(flag, icon="⚠️")
+                st.error(flag, icon="⛔")
         else:
             st.success("Tous les contrôles réglementaires sont satisfaits.", icon="✅")
+
+        if compliance_result.get("warnings"):
+            st.markdown("**🟡 Zones d'alerte (conforme mais proche du seuil) :**")
+            for warning in compliance_result["warnings"]:
+                st.warning(warning, icon="⚠️")
 
         st.caption(
             f"**Position après opération** — EUR : {pos_eur_after:,.0f} · "
             f"USD : {pos_usd_after:,.0f} (limite : {position_limit:,.0f})"
         )
 
-    # --- Narratif ---
-    st.markdown("#### 📝 Interprétation")
+    # --- Explication langage simple (pour le jury) ---
+    st.markdown("#### 💡 Explication en langage simple")
+    explanation = explain_decision(decision, forex_result, treasury_result,
+                                   risk_result, compliance_result)
+    st.info(explanation, icon="🎓")
+
+    # --- Narratif détaillé ---
+    st.markdown("#### 📝 Interprétation détaillée")
     narrative = build_narrative(amount, direction, pair, horizon, decision,
                                 forex_result, treasury_result, risk_result, compliance_result)
     st.info(narrative, icon="💬")
@@ -327,5 +372,27 @@ elif "last_simulation" in st.session_state:
 else:
     st.info("Entrez les paramètres ci-dessus puis cliquez sur **Analyser l'opération** "
             "pour obtenir une recommandation.", icon="👆")
+
+# ==========================================================
+# 4) HISTORIQUE DES SIMULATIONS (item #12)
+# ==========================================================
+history = st.session_state.get("simulations_history", [])
+if history:
+    st.divider()
+    st.subheader(f"📚 Historique des simulations ({len(history)})")
+    hist_df = pd.DataFrame(history[::-1])  # plus récent en haut
+    st.dataframe(
+        hist_df,
+        width='stretch',
+        column_config={
+            "Montant": st.column_config.NumberColumn("Montant", format="%d"),
+            "Score global": st.column_config.NumberColumn("Score global", format="%+.3f"),
+            "Confiance %": st.column_config.NumberColumn("Confiance %", format="%.1f"),
+        },
+        hide_index=True,
+    )
+    if st.button("🗑️ Effacer l'historique", type="secondary"):
+        st.session_state["simulations_history"] = []
+        st.rerun()
 
 render_footer()

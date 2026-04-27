@@ -1,17 +1,23 @@
 from .engine import (
-    MarketDataModule,
-    ForexAnalysisModule,
-    TreasuryManagementModule,
-    RiskManagementModule,
-    ComplianceModule,
     AIDecisionEngine,
+    ComplianceModule,
+    DataCollectionModule,
+    ForexAnalysisModule,
+    IntelligentDecisionEngine,
+    MarketDataModule,
+    RiskManagementModule,
+    TraderInteractionModule,
+    TreasuryManagementModule,
 )
 
 __all__ = [
-    "MarketDataModule",
-    "ForexAnalysisModule",
-    "TreasuryManagementModule",
-    "RiskManagementModule",
-    "ComplianceModule",
     "AIDecisionEngine",
+    "ComplianceModule",
+    "DataCollectionModule",
+    "ForexAnalysisModule",
+    "IntelligentDecisionEngine",
+    "MarketDataModule",
+    "RiskManagementModule",
+    "TraderInteractionModule",
+    "TreasuryManagementModule",
 ]
