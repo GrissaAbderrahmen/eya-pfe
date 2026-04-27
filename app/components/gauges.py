@@ -87,8 +87,18 @@ def liquidity_gauge(lcr: float) -> go.Figure:
     return fig
 
 
-def normalized_scores_bar(normalized_scores: dict, weights: dict) -> go.Figure:
-    """Barres horizontales des 4 scores normalisés, pondérés en opacité."""
+def normalized_scores_bar(normalized_scores: dict, weights: dict,
+                          qualitative_labels: dict | None = None) -> go.Figure:
+    """Barres horizontales des 4 scores normalisés.
+
+    qualitative_labels (optionnel) : dict {forex, treasury, risk, compliance} → str
+    affiché entre parenthèses après la valeur (ex: "+0.00 (MEDIUM)") pour que
+    l'utilisateur comprenne qu'une valeur 0 est un état neutre, pas un bug.
+
+    Astuce visuelle : si |value| < 0.05, on dessine une barre fantôme de
+    largeur 0.05 dans la couleur neutre pour qu'elle reste visible. La valeur
+    réelle (0.00) reste affichée dans le label.
+    """
     labels_fr = {
         "forex": "Forex",
         "treasury": "Trésorerie",
@@ -98,24 +108,47 @@ def normalized_scores_bar(normalized_scores: dict, weights: dict) -> go.Figure:
     keys = ["forex", "treasury", "risk", "compliance"]
     labels = [f"{labels_fr[k]} · poids {int(weights[k]*100)}%" for k in keys]
     values = [normalized_scores[k] for k in keys]
-    colors = [COLORS["success"] if v > 0 else COLORS["danger"] if v < 0 else COLORS["neutral"]
-              for v in values]
+    qualitative_labels = qualitative_labels or {}
+
+    # Largeurs d'affichage : valeurs quasi-nulles affichées avec une barre
+    # fantôme de ±0.05 pour rester visibles.
+    GHOST = 0.05
+    display_x = [
+        v if abs(v) >= GHOST else (GHOST if v >= 0 else -GHOST)
+        for v in values
+    ]
+    colors = [
+        COLORS["success"] if v > 0.05 else
+        COLORS["danger"] if v < -0.05 else
+        COLORS["neutral"]
+        for v in values
+    ]
+    text_labels = []
+    for k, v in zip(keys, values):
+        ql = qualitative_labels.get(k)
+        if ql:
+            text_labels.append(f"{v:+.2f} ({ql})")
+        else:
+            text_labels.append(f"{v:+.2f}")
 
     fig = go.Figure(
         go.Bar(
-            x=values,
+            x=display_x,
             y=labels,
             orientation="h",
             marker_color=colors,
-            text=[f"{v:+.2f}" for v in values],
+            marker_line=dict(width=0.5, color=COLORS["anthracite"]),
+            text=text_labels,
             textposition="outside",
+            customdata=values,
+            hovertemplate="%{y}<br>Score normalisé : %{customdata:+.3f}<extra></extra>",
         )
     )
     fig.update_layout(
-        xaxis=dict(range=[-1.15, 1.15], tickvals=[-1, -0.5, 0, 0.5, 1], zeroline=True,
+        xaxis=dict(range=[-1.20, 1.20], tickvals=[-1, -0.5, 0, 0.5, 1], zeroline=True,
                    zerolinecolor=COLORS["anthracite"], zerolinewidth=1.5),
         yaxis=dict(autorange="reversed"),
-        height=280,
+        height=300,
         margin=dict(l=20, r=20, t=20, b=20),
         plot_bgcolor="white",
     )

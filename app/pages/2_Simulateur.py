@@ -302,8 +302,17 @@ if analyse:
                         width='stretch')
 
     st.markdown("#### Détail des 4 modules")
-    st.plotly_chart(normalized_scores_bar(decision["normalized_scores"], decision["weights"]),
-                    width='stretch')
+    qualitative = {
+        "forex": forex_result["signal"],
+        "treasury": treasury_result["treasury_recommendation"].split(" -> ")[0],
+        "risk": risk_result["risk_level"],
+        "compliance": compliance_result["status"].replace("_", " "),
+    }
+    st.plotly_chart(
+        normalized_scores_bar(decision["normalized_scores"], decision["weights"],
+                              qualitative_labels=qualitative),
+        width='stretch',
+    )
 
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     with col_m1:

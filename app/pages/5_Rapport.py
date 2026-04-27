@@ -189,8 +189,15 @@ def build_pdf(simulation: dict) -> bytes:
     flow.append(_styled_table(modules_data, col_widths=[3 * cm, 3.5 * cm, 10 * cm]))
     flow.append(Spacer(1, 8))
 
+    qualitative = {
+        "forex": fx.get("signal", ""),
+        "treasury": tr.get("treasury_recommendation", "").split(" -> ")[0],
+        "risk": rk.get("risk_level", ""),
+        "compliance": cp.get("status", "").replace("_", " "),
+    }
     bar_img = _fig_to_image(
-        normalized_scores_bar(dec["normalized_scores"], dec["weights"]),
+        normalized_scores_bar(dec["normalized_scores"], dec["weights"],
+                              qualitative_labels=qualitative),
         width_cm=16, height_cm=6,
     )
     if bar_img:
@@ -332,7 +339,14 @@ with preview_cols[0]:
     st.plotly_chart(global_score_gauge(dec["global_score"]), width='stretch')
 with preview_cols[1]:
     st.plotly_chart(confidence_gauge(dec["confidence_score"]), width='stretch')
-st.plotly_chart(normalized_scores_bar(dec["normalized_scores"], dec["weights"]), width='stretch')
+_qual = {
+    "forex": sim["forex"].get("signal", ""),
+    "treasury": sim["treasury"].get("treasury_recommendation", "").split(" -> ")[0],
+    "risk": sim["risk"].get("risk_level", ""),
+    "compliance": sim["compliance"].get("status", "").replace("_", " "),
+}
+st.plotly_chart(normalized_scores_bar(dec["normalized_scores"], dec["weights"],
+                                      qualitative_labels=_qual), width='stretch')
 
 st.markdown("#### Conclusion (telle qu'elle apparaîtra dans le PDF)")
 from app.core.explainer import explain_decision as _explain

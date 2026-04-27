@@ -77,7 +77,21 @@ st.info(
 # ==========================================================
 st.subheader("Étape 2 · Scores normalisés des 4 modules")
 
-st.plotly_chart(normalized_scores_bar(ns, w), width='stretch')
+qualitative = {
+    "forex": sim["forex"].get("signal", ""),
+    "treasury": sim["treasury"].get("treasury_recommendation", "").split(" -> ")[0],
+    "risk": sim["risk"].get("risk_level", ""),
+    "compliance": sim["compliance"].get("status", "").replace("_", " "),
+}
+st.plotly_chart(normalized_scores_bar(ns, w, qualitative_labels=qualitative),
+                width='stretch')
+
+st.caption(
+    "💡 Les normalisations Risque et Trésorerie sont **continues** depuis avril 2026 : "
+    "le risk_score brut (0-8) et le couple net_cash + liquidité sont mappés linéairement "
+    "sur [+1, -1]. Ça évite que la barre soit pile à 0 (donc invisible) quand le module "
+    "est en zone neutre — la valeur reste informative."
+)
 
 col_n1, col_n2, col_n3, col_n4 = st.columns(4)
 for col, (key, label, color) in zip(

@@ -333,16 +333,36 @@ class AIDecisionEngine:
         return max(-1.0, min(1.0, score / 4.0))
 
     def _normalize_treasury(self, treasury_result):
-        rec = treasury_result.get("treasury_recommendation", "")
-        if "SURPLUS" in rec:
-            return 1.0
-        if "DEFICIT" in rec:
-            return -1.0
-        return 0.0
+        # Normalisation continue (2026-04 v2) : combine net_cash et liquidité.
+        # Évite que BALANCED produise systématiquement 0.00 (barre invisible).
+        # Rétro-compat : si net_cash absent, fallback sur le step function de la
+        # recommandation textuelle (pour les anciens tests qui forgent un dict
+        # minimal).
+        net = treasury_result.get("net_cash")
+        if net is None:
+            rec = treasury_result.get("treasury_recommendation", "")
+            if "SURPLUS" in rec:
+                return 1.0
+            if "DEFICIT" in rec:
+                return -1.0
+            return 0.0
+        liquidity = treasury_result.get("liquidity_level", 0.5)
+        cash_factor = max(-1.0, min(1.0, net / 1_000_000))      # ±1M TND → ±1.0
+        liquidity_factor = max(-1.0, min(1.0, (liquidity - 0.5) * 2))
+        return round((cash_factor + liquidity_factor) / 2, 4)
 
     def _normalize_risk(self, risk_result):
-        level = risk_result.get("risk_level", "MEDIUM")
-        return {"LOW": 1.0, "MEDIUM": 0.0, "HIGH": -1.0}.get(level, 0.0)
+        # Normalisation continue (2026-04 v2) : utilise risk_score brut (0-8)
+        # mappé linéairement sur [+1, -1]. Évite que MEDIUM produise pile 0.0
+        # (la moitié des scénarios pré-chargés tombaient dans cette bande →
+        # barre invisible dans le graphique normalized_scores_bar).
+        # Rétro-compat : si risk_score absent, fallback sur le step function
+        # 3 niveaux (LOW/MEDIUM/HIGH).
+        raw = risk_result.get("risk_score")
+        if raw is None:
+            level = risk_result.get("risk_level", "MEDIUM")
+            return {"LOW": 1.0, "MEDIUM": 0.0, "HIGH": -1.0}.get(level, 0.0)
+        return round(max(-1.0, min(1.0, 1.0 - 2.0 * raw / 8.0)), 4)
 
     def _normalize_compliance(self, compliance_result):
         if compliance_result is None:
