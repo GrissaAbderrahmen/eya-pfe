@@ -10,7 +10,7 @@ import streamlit as st
 
 from app.core.bct_scraper import compare_with_yfinance, fetch_bct_rates
 from app.core.engine import ForexAnalysisModule
-from app.core.market_data import fetch_history_ohlc
+from app.core.market_data import fetch_history_ohlc, get_data_source
 from app.core.yfinance_pairs import PAIRS
 from components.branding import (
     COLORS,
@@ -76,15 +76,27 @@ prev_rate = float(df["Close"].iloc[-2]) if len(df) > 1 else current_rate
 delta_pct = (current_rate - prev_rate) / prev_rate * 100 if prev_rate else 0.0
 
 # ---- Badge source + dernier prix ----
+source = get_data_source(pair)
+source_color = {
+    "yfinance": COLORS["success"],
+    "CSV bundlé": COLORS["warning"],
+    "simulation": COLORS["danger"],
+}.get(source, COLORS["neutral"])
+source_caption = {
+    "yfinance": f"{len(df)} jours d'historique temps réel",
+    "CSV bundlé": f"{len(df)} jours — Yahoo rate-limited, fallback CSV (1 an pré-téléchargé)",
+    "simulation": "Données simulées — toutes les sources externes sont indisponibles",
+}.get(source, "")
+
 col_a, col_b, col_c = st.columns([1, 2, 2])
 with col_a:
     st.markdown(
         f'<div style="display:inline-block; padding: 0.3rem 0.9rem; border-radius: 999px; '
-        f'background:{COLORS["success"]}22; color:{COLORS["success"]}; font-weight:700; '
-        f'letter-spacing:0.06em;">● YFINANCE</div>',
+        f'background:{source_color}22; color:{source_color}; font-weight:700; '
+        f'letter-spacing:0.06em;">● {source.upper()}</div>',
         unsafe_allow_html=True,
     )
-    st.caption(f"{len(df)} jours d'historique réel")
+    st.caption(source_caption)
 with col_b:
     st.markdown(
         f'<div style="font-size: 0.85rem; color: #6C757D; margin-top: 0.15rem;">'

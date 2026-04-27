@@ -45,19 +45,30 @@ def test_fetch_history_unknown_pair_returns_empty():
     assert result.empty
 
 
-def test_fetch_history_handles_yfinance_failure():
-    """Si yfinance lève, on doit retourner un DataFrame vide (pas planter la page)."""
+def test_fetch_history_handles_yfinance_failure_uses_csv_bundle():
+    """Si yfinance échoue, le CSV bundlé doit prendre le relais."""
     market_data.fetch_history_ohlc.clear()
-    with patch.object(market_data, "yf") as mock_yf:
-        mock_yf.download.side_effect = RuntimeError("network down")
+    with patch.object(market_data, "_try_yfinance", return_value=pd.DataFrame()):
+        result = market_data.fetch_history_ohlc("EUR/USD", period="3mo")
+    # Le CSV bundlé existe pour EUR/USD → résultat non-vide
+    assert not result.empty
+    assert list(result.columns) == ["Open", "High", "Low", "Close"]
+
+
+def test_fetch_history_returns_empty_when_all_sources_fail():
+    """Si yfinance ET CSV bundlé échouent, on retourne un DataFrame vide."""
+    market_data.fetch_history_ohlc.clear()
+    with patch.object(market_data, "_try_yfinance", return_value=pd.DataFrame()), \
+         patch.object(market_data, "_load_bundled_csv", return_value=pd.DataFrame()):
         result = market_data.fetch_history_ohlc("EUR/USD", period="3mo")
     assert result.empty
 
 
-def test_fetch_latest_rate_falls_back_when_empty():
+def test_fetch_latest_rate_falls_back_to_simulation():
+    """Si yfinance ET CSV échouent, fallback simulé."""
     market_data.fetch_history_ohlc.clear()
-    with patch.object(market_data, "yf") as mock_yf:
-        mock_yf.download.return_value = pd.DataFrame()
+    with patch.object(market_data, "_try_yfinance", return_value=pd.DataFrame()), \
+         patch.object(market_data, "_load_bundled_csv", return_value=pd.DataFrame()):
         rate, source = market_data.fetch_latest_rate("EUR/TND")
     assert source == "SIMULATION"
     assert rate == SIMULATED_BASE_PRICES["EUR/TND"]
