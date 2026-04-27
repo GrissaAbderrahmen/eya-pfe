@@ -38,13 +38,15 @@ except ImportError:
 _SYSTEM_PROMPT = """Tu es l'assistant trading interne d'Attijari Bank Tunisie. Tu aides la
 salle de marché à interpréter les recommandations du système d'aide à la décision.
 
-Règles strictes :
+Règles :
 - Réponds toujours en français professionnel.
 - Cite les chiffres exacts du contexte de simulation fourni (RSI, LCR, exposition, score, etc.).
-- Maximum 200 mots par réponse.
+- Réponse complète mais concise : 100 à 300 mots, structurée en paragraphes courts ou
+  liste à puces selon ce qui est le plus clair.
 - Si la question dépasse les données fournies, dis-le clairement, ne devine pas.
 - Reste neutre et factuel : tu n'es pas un conseiller en investissement, tu interprètes le modèle.
 - Mentionne les contraintes BCT si elles sont en jeu (LCR, position, exposition).
+- Ne commence PAS par recopier la question — réponds directement.
 """
 
 
@@ -190,10 +192,22 @@ class ChatService:
             f"Contexte de la simulation :\n{_format_simulation_context(simulation_context)}\n\n"
             f"Question du trader : {question}"
         )
+        # max_output_tokens élevé : les modèles 2.5-flash dépensent une partie
+        # du budget en "thinking" interne qui n'apparaît pas dans response.text
+        # mais compte dans la limite. 2000 tokens laisse ~1500 tokens utiles
+        # pour la réponse même après réflexion.
+        # thinking_config désactivé : pour 2.5-flash, supprime le thinking →
+        # réponse instantanée et tout le budget va dans la sortie. Sans effet
+        # sur les 2.0 et antérieurs (ignoré silencieusement).
+        try:
+            thinking_cfg = genai_types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            thinking_cfg = None
         config = genai_types.GenerateContentConfig(
             system_instruction=_SYSTEM_PROMPT,
-            temperature=0.3,
-            max_output_tokens=400,
+            temperature=0.4,
+            max_output_tokens=2000,
+            thinking_config=thinking_cfg,
         )
 
         # On essaie le modèle déjà validé, sinon on parcourt la chaîne.
