@@ -110,8 +110,13 @@ Décision finale :
 """.strip()
 
 
-def _fallback_response(question: str, sim: dict[str, Any] | None) -> str:
-    """Réponse templated quand Gemini est indisponible — basée sur le contexte simu."""
+def _fallback_response(question: str, sim: dict[str, Any] | None,
+                       suppress_key_hint: bool = False) -> str:
+    """Réponse templated quand Gemini est indisponible — basée sur le contexte simu.
+
+    suppress_key_hint : True quand la clé EST configurée mais l'API a échoué
+    (évite le message trompeur « clé non configurée »).
+    """
     if not sim:
         return (
             "Aucune simulation n'est encore chargée. Merci de lancer d'abord une analyse "
@@ -123,15 +128,20 @@ def _fallback_response(question: str, sim: dict[str, Any] | None) -> str:
     final = decision.get("final_decision", "HOLD")
     confidence = decision.get("confidence_score", 50)
     score = decision.get("global_score", 0)
-    return (
+    body = (
         f"Le modèle recommande **{final}** sur cette opération de "
         f"{op.get('direction', '').lower()} de {op.get('amount', 0):,.0f} en "
         f"{op.get('pair', '?')}, avec un score global de **{score:+.3f}** et une confiance "
         f"de **{confidence:.0f}%**. "
-        f"Le signal Forex est **{forex.get('signal', '?')}** (RSI à {forex.get('rsi', 50):.0f}). "
-        f"\n\n*(Mode de secours — la clé Gemini n'est pas configurée. "
-        f"Définissez `GEMINI_API_KEY` dans `.env` pour des réponses contextuelles complètes.)*"
+        f"Le signal Forex est **{forex.get('signal', '?')}** (RSI à {forex.get('rsi', 50):.0f})."
     )
+    if not suppress_key_hint:
+        body += (
+            f"\n\n*(Mode de secours — la clé Gemini n'est pas configurée. "
+            f"Définissez `GEMINI_API_KEY` dans `.streamlit/secrets.toml` ou `.env` "
+            f"pour des réponses contextuelles complètes.)*"
+        )
+    return body
 
 
 class ChatService:
@@ -142,7 +152,10 @@ class ChatService:
         response = svc.ask("Que penses-tu de cette opération ?", simulation_dict)
     """
 
-    MODEL_NAME = "gemini-2.0-flash"
+    # gemini-1.5-flash : modèle le plus largement disponible géographiquement
+    # (gemini-2.0-flash peut être restreint dans certaines régions). Free tier
+    # généreux : 15 RPM, 1500 RPD.
+    MODEL_NAME = "gemini-1.5-flash"
 
     def __init__(self):
         self._client = None
@@ -180,8 +193,17 @@ class ChatService:
             text = (response.text or "").strip()
             return text or _fallback_response(question, simulation_context)
         except Exception as exc:
+            # Surface l'erreur réelle (et pas juste le type) pour faciliter le debug.
+            # Les ClientError de Gemini contiennent souvent un message JSON utile
+            # (model not found, quota exceeded, permission denied, etc.).
+            err_msg = str(exc).strip() or type(exc).__name__
+            # Tronquer pour éviter d'exploser l'UI
+            if len(err_msg) > 400:
+                err_msg = err_msg[:400] + "…"
             return (
-                f"⚠️ L'appel à Gemini a échoué ({type(exc).__name__}). "
-                f"Réponse de secours basée sur la simulation :\n\n"
-                f"{_fallback_response(question, simulation_context)}"
+                f"⚠️ **Appel Gemini échoué** ({type(exc).__name__})\n\n"
+                f"Détail technique : `{err_msg}`\n\n"
+                f"---\n\n"
+                f"**Réponse de secours basée sur la simulation :**\n\n"
+                f"{_fallback_response(question, simulation_context, suppress_key_hint=True)}"
             )
