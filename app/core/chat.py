@@ -152,13 +152,22 @@ class ChatService:
         response = svc.ask("Que penses-tu de cette opération ?", simulation_dict)
     """
 
-    # gemini-1.5-flash : modèle le plus largement disponible géographiquement
-    # (gemini-2.0-flash peut être restreint dans certaines régions). Free tier
-    # généreux : 15 RPM, 1500 RPD.
-    MODEL_NAME = "gemini-1.5-flash"
+    # Chaîne de modèles à essayer dans l'ordre. Le SDK google-genai par défaut
+    # appelle l'endpoint v1beta ; les modèles disponibles sur cet endpoint
+    # changent fréquemment (1.5-flash a été retiré début 2026). On essaie le
+    # plus récent en premier puis on retombe sur les anciens. Le premier qui
+    # marche est mémorisé pour les appels suivants.
+    MODEL_CANDIDATES = (
+        "gemini-2.5-flash",        # stable récent, free tier
+        "gemini-2.5-flash-lite",   # version lite, encore plus rapide
+        "gemini-2.0-flash",        # stable précédent
+        "gemini-2.0-flash-exp",    # experimental fallback
+        "gemini-flash-latest",     # alias auto-update
+    )
 
     def __init__(self):
         self._client = None
+        self._working_model: str | None = None  # caché après le 1er succès
         if genai is None:
             return
         key = _get_api_key()
@@ -176,34 +185,50 @@ class ChatService:
     def ask(self, question: str, simulation_context: dict | None = None) -> str:
         if self._client is None:
             return _fallback_response(question, simulation_context)
-        try:
-            full_prompt = (
-                f"Contexte de la simulation :\n{_format_simulation_context(simulation_context)}\n\n"
-                f"Question du trader : {question}"
-            )
-            response = self._client.models.generate_content(
-                model=self.MODEL_NAME,
-                contents=full_prompt,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=_SYSTEM_PROMPT,
-                    temperature=0.3,
-                    max_output_tokens=400,
-                ),
-            )
-            text = (response.text or "").strip()
-            return text or _fallback_response(question, simulation_context)
-        except Exception as exc:
-            # Surface l'erreur réelle (et pas juste le type) pour faciliter le debug.
-            # Les ClientError de Gemini contiennent souvent un message JSON utile
-            # (model not found, quota exceeded, permission denied, etc.).
-            err_msg = str(exc).strip() or type(exc).__name__
-            # Tronquer pour éviter d'exploser l'UI
-            if len(err_msg) > 400:
-                err_msg = err_msg[:400] + "…"
-            return (
-                f"⚠️ **Appel Gemini échoué** ({type(exc).__name__})\n\n"
-                f"Détail technique : `{err_msg}`\n\n"
-                f"---\n\n"
-                f"**Réponse de secours basée sur la simulation :**\n\n"
-                f"{_fallback_response(question, simulation_context, suppress_key_hint=True)}"
-            )
+
+        full_prompt = (
+            f"Contexte de la simulation :\n{_format_simulation_context(simulation_context)}\n\n"
+            f"Question du trader : {question}"
+        )
+        config = genai_types.GenerateContentConfig(
+            system_instruction=_SYSTEM_PROMPT,
+            temperature=0.3,
+            max_output_tokens=400,
+        )
+
+        # On essaie le modèle déjà validé, sinon on parcourt la chaîne.
+        candidates = ((self._working_model,) if self._working_model
+                      else self.MODEL_CANDIDATES)
+
+        last_exc: Exception | None = None
+        for model_name in candidates:
+            try:
+                response = self._client.models.generate_content(
+                    model=model_name, contents=full_prompt, config=config,
+                )
+                self._working_model = model_name  # cache pour les prochains appels
+                text = (response.text or "").strip()
+                return text or _fallback_response(question, simulation_context)
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc)
+                # 404 / NOT_FOUND → modèle indisponible, on essaie le suivant.
+                if "404" in msg or "NOT_FOUND" in msg or "not found" in msg.lower():
+                    continue
+                # Autre type d'erreur (quota, permission, réseau) → on s'arrête
+                # et on surface, ça ne sert à rien d'essayer les autres modèles.
+                break
+
+        # Tous les modèles ont échoué (ou erreur non-404 sur le premier)
+        err_msg = str(last_exc).strip() if last_exc else "unknown"
+        if len(err_msg) > 400:
+            err_msg = err_msg[:400] + "…"
+        tried = ", ".join(candidates)
+        return (
+            f"⚠️ **Appel Gemini échoué** ({type(last_exc).__name__ if last_exc else 'Error'})\n\n"
+            f"Modèles essayés : `{tried}`\n\n"
+            f"Détail technique : `{err_msg}`\n\n"
+            f"---\n\n"
+            f"**Réponse de secours basée sur la simulation :**\n\n"
+            f"{_fallback_response(question, simulation_context, suppress_key_hint=True)}"
+        )
