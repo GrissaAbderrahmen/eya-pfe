@@ -157,6 +157,14 @@ with col_op4:
     horizon = st.selectbox("Horizon", options=["Spot", "1 semaine", "1 mois", "3 mois"],
                            index=["Spot", "1 semaine", "1 mois", "3 mois"].index(P("horizon", "1 mois")))
 
+st.caption(
+    "ℹ️ **Sens (Achat/Vente)** indique l'opération que le trader veut effectuer ; "
+    "il sert au calcul de la position après opération (impact conformité). "
+    "**La recommandation BUY/SELL/HOLD du modèle reflète la direction du marché** "
+    "(signal Forex), pas votre opération. Une « Vente GBP/USD » avec recommandation BUY "
+    "signifie : le modèle anticipe une hausse → vendre maintenant est sous-optimal."
+)
+
 # ==========================================================
 # 2) INPUTS — TRÉSORERIE / RISQUE / CONFORMITÉ
 # ==========================================================

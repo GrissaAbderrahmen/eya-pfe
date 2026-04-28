@@ -143,6 +143,14 @@ with col_i4:
 
 st.plotly_chart(rsi_indicator(rsi), width='stretch')
 
+st.caption(
+    "ℹ️ Les indicateurs techniques (RSI 14j, MACD 5/12, MA 5j, Volatilité 10j) "
+    "utilisent des **fenêtres standards** de l'analyse technique et sont indépendants "
+    "de la période d'historique sélectionnée ci-dessus. Changer la période modifie "
+    "le candlestick et le tableau OHLC, pas les indicateurs (qui regardent toujours "
+    "les N derniers jours)."
+)
+
 with st.expander("🔍 Détail des règles appliquées"):
     st.markdown(
         f"""

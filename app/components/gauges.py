@@ -145,7 +145,10 @@ def normalized_scores_bar(normalized_scores: dict, weights: dict,
         )
     )
     fig.update_layout(
-        xaxis=dict(range=[-1.20, 1.20], tickvals=[-1, -0.5, 0, 0.5, 1], zeroline=True,
+        # range élargi à ±1.50 (au lieu de ±1.20) pour donner de la place aux
+        # labels « outside » qui contiennent maintenant un suffixe qualitatif
+        # genre « +0.45 (SURPLUS) ». Les ticks restent à ±1, ±0.5, 0.
+        xaxis=dict(range=[-1.50, 1.50], tickvals=[-1, -0.5, 0, 0.5, 1], zeroline=True,
                    zerolinecolor=COLORS["anthracite"], zerolinewidth=1.5),
         yaxis=dict(autorange="reversed"),
         height=300,

@@ -324,20 +324,28 @@ class ComplianceModule:
 # =========================================================
 class AIDecisionEngine:
     WEIGHTS = {"forex": 0.4, "treasury": 0.25, "risk": 0.25, "compliance": 0.1}
-    BUY_THRESHOLD = 0.5
-    SELL_THRESHOLD = -0.5
+    # Seuils recalibrés (2026-04 v3) : ±0.30 au lieu de ±0.50.
+    # Justification : avec les normalizers décompressés ci-dessous, ±0.30 (30% de
+    # l'amplitude [-1, +1]) reste un seuil prudent. Avant : la zone HOLD couvrait
+    # 100% de l'amplitude → quasi-unanimité requise pour basculer → 90% des
+    # décisions étaient HOLD sur le backtest empirique.
+    BUY_THRESHOLD = 0.30
+    SELL_THRESHOLD = -0.30
 
     def _normalize_forex(self, forex_result):
-        # signal_score ∈ ~[-4, +4] → mappé sur [-1, +1]
+        # signal_score ∈ ~[-4, +4] mais en pratique [-2, +2] (vol penalty
+        # annule souvent une règle). Division par 2.0 (au lieu de 4.0)
+        # pour que les cas typiques (2 règles alignées) saturent à ±1.0.
+        # Forex contribue alors jusqu'à ±0.4 (au lieu de ±0.2 avant).
         score = forex_result.get("signal_score", 0)
-        return max(-1.0, min(1.0, score / 4.0))
+        return max(-1.0, min(1.0, score / 2.0))
 
     def _normalize_treasury(self, treasury_result):
-        # Normalisation continue (2026-04 v2) : combine net_cash et liquidité.
-        # Évite que BALANCED produise systématiquement 0.00 (barre invisible).
-        # Rétro-compat : si net_cash absent, fallback sur le step function de la
-        # recommandation textuelle (pour les anciens tests qui forgent un dict
-        # minimal).
+        # Normalisation continue (2026-04 v3) : si cash_factor et liquidity_factor
+        # vont dans le même sens, on les ADDITIONNE (clampé) pour saturer le
+        # signal au lieu de moyenner (qui diluait). Si conflit, on moyenne pour
+        # rester prudent. Rétro-compat : fallback sur step function si net_cash
+        # absent (anciens tests).
         net = treasury_result.get("net_cash")
         if net is None:
             rec = treasury_result.get("treasury_recommendation", "")
@@ -349,20 +357,25 @@ class AIDecisionEngine:
         liquidity = treasury_result.get("liquidity_level", 0.5)
         cash_factor = max(-1.0, min(1.0, net / 1_000_000))      # ±1M TND → ±1.0
         liquidity_factor = max(-1.0, min(1.0, (liquidity - 0.5) * 2))
+        if cash_factor * liquidity_factor >= 0:
+            # Même sens (ou un nul) → addition saturée
+            return round(max(-1.0, min(1.0, cash_factor + liquidity_factor)), 4)
+        # Sens contraires → moyenne (prudence)
         return round((cash_factor + liquidity_factor) / 2, 4)
 
     def _normalize_risk(self, risk_result):
-        # Normalisation continue (2026-04 v2) : utilise risk_score brut (0-8)
-        # mappé linéairement sur [+1, -1]. Évite que MEDIUM produise pile 0.0
-        # (la moitié des scénarios pré-chargés tombaient dans cette bande →
-        # barre invisible dans le graphique normalized_scores_bar).
-        # Rétro-compat : si risk_score absent, fallback sur le step function
-        # 3 niveaux (LOW/MEDIUM/HIGH).
+        # Normalisation continue (2026-04 v3) : map risk_score (0-8) sur [+1, -1]
+        # AVEC point neutre à risk_score=3 (au lieu de 4). Concrètement :
+        # score 0 → +1.0, score 3 → 0.0, score 4 → -0.33, score 6 → -1.0.
+        # Justification : en finance, le risque « moyen » EST déjà un signal de
+        # prudence — la zone vraiment neutre devrait être étroite. Avant : score=4
+        # (cas hyper commun avec inflation 5-7%, cb_rate 5-8%) → exactement 0,
+        # ce qui rendait le module Risque silencieux dans la moitié des scénarios.
         raw = risk_result.get("risk_score")
         if raw is None:
             level = risk_result.get("risk_level", "MEDIUM")
-            return {"LOW": 1.0, "MEDIUM": 0.0, "HIGH": -1.0}.get(level, 0.0)
-        return round(max(-1.0, min(1.0, 1.0 - 2.0 * raw / 8.0)), 4)
+            return {"LOW": 1.0, "MEDIUM": -0.2, "HIGH": -1.0}.get(level, -0.2)
+        return round(max(-1.0, min(1.0, 1.0 - raw / 3.0)), 4)
 
     def _normalize_compliance(self, compliance_result):
         if compliance_result is None:

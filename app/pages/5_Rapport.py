@@ -198,7 +198,7 @@ def build_pdf(simulation: dict) -> bytes:
     bar_img = _fig_to_image(
         normalized_scores_bar(dec["normalized_scores"], dec["weights"],
                               qualitative_labels=qualitative),
-        width_cm=16, height_cm=6,
+        width_cm=18, height_cm=6,
     )
     if bar_img:
         flow.append(bar_img)
@@ -248,11 +248,35 @@ def build_pdf(simulation: dict) -> bytes:
         flow.append(gauges_table)
     flow.append(Spacer(1, 8))
 
-    # --- Section 6 : Conformité (flags + warnings) ---
+    # --- Section 6 : Décomposition du niveau de confiance ---
+    cb = dec.get("confidence_breakdown", {})
+    if cb:
+        flow.append(Paragraph("6. Décomposition du niveau de confiance", h2))
+        flow.append(Paragraph(
+            "Formule : <b>30 (base) + 50 × |score global| + 20 × accord_modules</b>. "
+            "L'accord vaut 1 − écart-type des 4 scores normalisés. Plafonné à 25 % "
+            "si la décision est bloquée.",
+            body,
+        ))
+        conf_data = [
+            ["Composante", "Valeur", "Points"],
+            ["Base incompressible", "—", f"{cb.get('base', 30):.1f}"],
+            ["Magnitude du score (×50)", f"{cb.get('magnitude_factor', 0):.3f}",
+             f"{cb.get('magnitude_pts', 0):.1f}"],
+            ["Accord entre modules (×20)", f"{cb.get('agreement_factor', 0):.3f}",
+             f"{cb.get('agreement_pts', 0):.1f}"],
+            ["Total", "", f"{dec['confidence_score']:.1f} %"],
+        ]
+        flow.append(_styled_table(
+            conf_data, col_widths=[7 * cm, 4 * cm, 3 * cm], highlight_last_row=True,
+        ))
+        flow.append(Spacer(1, 10))
+
+    # --- Section 7 : Conformité (flags + warnings) ---
     flags = cp.get("flags", [])
     warnings_list = cp.get("warnings", [])
     if flags or warnings_list:
-        flow.append(Paragraph("6. Contrôles de conformité — détail", h2))
+        flow.append(Paragraph("7. Contrôles de conformité — détail", h2))
         if flags:
             flow.append(Paragraph("<b>Violations réglementaires :</b>", body))
             for f in flags:
@@ -263,9 +287,9 @@ def build_pdf(simulation: dict) -> bytes:
                 flow.append(Paragraph(f"• {w_msg}", body))
         flow.append(Spacer(1, 8))
 
-    # --- Section 7 : Tableau OHLC ---
+    # --- Section 8 : Tableau OHLC ---
     if not df_ohlc.empty:
-        flow.append(Paragraph("7. Données OHLC — 20 derniers jours", h2))
+        flow.append(Paragraph("8. Données OHLC — 20 derniers jours", h2))
         ohlc_tail = df_ohlc.tail(20).iloc[::-1].round(4)
         ohlc_data = [["Date", "Open", "High", "Low", "Close"]]
         for date, row in ohlc_tail.iterrows():
@@ -278,8 +302,8 @@ def build_pdf(simulation: dict) -> bytes:
                                   col_widths=[3 * cm, 3 * cm, 3 * cm, 3 * cm, 3 * cm]))
         flow.append(Spacer(1, 10))
 
-    # --- Section 8 : Conclusion (explainer) ---
-    flow.append(Paragraph("8. Conclusion — interprétation pour le trader", h2))
+    # --- Section 9 : Conclusion (explainer) ---
+    flow.append(Paragraph("9. Conclusion — interprétation pour le trader", h2))
     explanation = explain_decision(dec, fx, tr, rk, cp)
     # Markdown bold ** -> HTML <b> pour ReportLab
     explanation_html = explanation.replace("**", "")
