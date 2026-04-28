@@ -1,6 +1,16 @@
 """Palette et composants de branding Attijari."""
 
+import base64
+import os
+
 import streamlit as st
+
+# Pre-load the logo at import time (once per worker)
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "assets", "attijari_logo.png")
+_LOGO_B64: str | None = None
+if os.path.isfile(_LOGO_PATH):
+    with open(_LOGO_PATH, "rb") as _f:
+        _LOGO_B64 = base64.b64encode(_f.read()).decode()
 
 COLORS = {
     "attijari_red": "#C8102E",
@@ -131,43 +141,58 @@ def inject_global_css():
             text-align: center;
         }
 
-        /* ---- Logo Attijari (CSS-only, pas de fichier image) ---- */
+        /* ---- Logo Attijari (image-based) ---- */
         .ati-logo-wrap {
             display: flex;
             align-items: center;
-            gap: 0.75rem;
-            padding: 0.5rem 0 1rem 0;
+            gap: 1rem;
+            padding: 0.75rem 1.5rem;
+            margin-bottom: 1rem;
+            background: linear-gradient(135deg, rgba(255,255,255,0.95) 0%, rgba(253,251,247,0.9) 100%);
+            border-radius: 14px;
+            border: 1px solid rgba(200,16,46,0.12);
+            box-shadow: 0 2px 12px rgba(139,11,32,0.06), 0 1px 3px rgba(0,0,0,0.04);
+            backdrop-filter: blur(8px);
+            position: relative;
+            overflow: hidden;
         }
-        .ati-logo-mark {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            width: 46px;
-            height: 46px;
-            border-radius: 8px;
-            background: linear-gradient(135deg, #C8102E 0%, #8B0B20 100%);
-            color: white;
-            font-weight: 800;
-            font-size: 1.4rem;
-            letter-spacing: -0.02em;
-            box-shadow: 0 2px 6px rgba(200,16,46,0.25);
+        .ati-logo-wrap::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0;
+            width: 4px; height: 100%;
+            background: linear-gradient(180deg, #C8102E 0%, #F4A261 50%, #C8102E 100%);
+            border-radius: 14px 0 0 14px;
+        }
+        .ati-logo-img {
+            height: 52px;
+            width: auto;
+            object-fit: contain;
+            flex-shrink: 0;
+            filter: drop-shadow(0 1px 2px rgba(0,0,0,0.08));
+            transition: transform 0.2s ease;
+        }
+        .ati-logo-wrap:hover .ati-logo-img {
+            transform: scale(1.03);
         }
         .ati-logo-text {
             display: flex;
             flex-direction: column;
-            line-height: 1.1;
+            line-height: 1.15;
         }
         .ati-logo-brand {
             font-weight: 800;
-            font-size: 1.15rem;
+            font-size: 1.1rem;
             color: #2B2B2B;
-            letter-spacing: 0.02em;
+            letter-spacing: 0.03em;
         }
         .ati-logo-tag {
-            font-size: 0.72rem;
-            color: #6C757D;
-            letter-spacing: 0.12em;
+            font-size: 0.7rem;
+            color: #8B0B20;
+            letter-spacing: 0.14em;
             text-transform: uppercase;
+            font-weight: 500;
+            opacity: 0.85;
         }
         </style>
         """,
@@ -176,19 +201,39 @@ def inject_global_css():
 
 
 def render_attijari_logo() -> None:
-    """Logo Attijari Bank — CSS pur, pas de fichier image à embarquer."""
-    st.markdown(
-        """
-        <div class="ati-logo-wrap">
-            <div class="ati-logo-mark">A</div>
-            <div class="ati-logo-text">
-                <div class="ati-logo-brand">ATTIJARI BANK</div>
-                <div class="ati-logo-tag">Salle de marché · Tunis</div>
+    """Logo Attijari Bank — image réelle avec fallback CSS."""
+    if _LOGO_B64:
+        st.markdown(
+            f"""
+            <div class="ati-logo-wrap">
+                <img class="ati-logo-img" src="data:image/png;base64,{_LOGO_B64}"
+                     alt="Attijari Bank" />
+                <div class="ati-logo-text">
+                    <div class="ati-logo-brand">ATTIJARI BANK</div>
+                    <div class="ati-logo-tag">Salle de marché · Tunis</div>
+                </div>
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+            """,
+            unsafe_allow_html=True,
+        )
+    else:
+        # Fallback: CSS-only logo if image is missing
+        st.markdown(
+            """
+            <div class="ati-logo-wrap">
+                <div style="display:inline-flex;align-items:center;justify-content:center;
+                     width:52px;height:52px;border-radius:10px;
+                     background:linear-gradient(135deg,#C8102E 0%,#8B0B20 100%);
+                     color:white;font-weight:800;font-size:1.5rem;
+                     box-shadow:0 2px 6px rgba(200,16,46,0.25);">A</div>
+                <div class="ati-logo-text">
+                    <div class="ati-logo-brand">ATTIJARI BANK</div>
+                    <div class="ati-logo-tag">Salle de marché · Tunis</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render_header(title: str, subtitle: str = "") -> None:

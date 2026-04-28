@@ -33,8 +33,8 @@ sim = st.session_state.get("last_simulation")
 default_eur = 400_000
 default_usd = 300_000
 if sim and "position_after" in sim:
-    default_eur = int(sim["position_after"].get("eur", default_eur))
-    default_usd = int(sim["position_after"].get("usd", default_usd))
+    default_eur = max(min(int(sim["position_after"].get("eur", default_eur)), 100_000_000), 0)
+    default_usd = max(min(int(sim["position_after"].get("usd", default_usd)), 100_000_000), 0)
 
 # ---- Inputs ----
 st.subheader("Positions par devise")
