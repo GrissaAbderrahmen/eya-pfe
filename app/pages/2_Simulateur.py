@@ -19,7 +19,8 @@ from app.core.engine import (
     TreasuryManagementModule,
 )
 from app.core.explainer import explain_decision
-from app.core.market_data import fetch_history_ohlc
+from app.core.market_data import fetch_history_ohlc, fetch_realtime_price
+from app.core.spread import compute_bid_ask, execution_price
 from app.core.yfinance_pairs import PAIRS, SIMULATED_BASE_PRICES
 from components.branding import (
     COLORS,
@@ -42,7 +43,8 @@ inject_global_css()
 
 
 def build_narrative(amount, direction, pair, horizon, decision,
-                    forex, treasury, risk, compliance):
+                    forex, treasury, risk, compliance, spread_info=None,
+                    exec_price=None):
     """Génère un petit paragraphe d'interprétation orienté jury."""
     verb = {"BUY": "ACHETER", "SELL": "VENDRE", "HOLD": "ATTENDRE"}
     action = verb.get(decision["final_decision"], "ATTENDRE")
@@ -52,6 +54,16 @@ def build_narrative(amount, direction, pair, horizon, decision,
         f"à horizon **{horizon}**, le modèle recommande **{action}** avec "
         f"**{decision['confidence_score']:.0f}% de confiance**."
     ]
+
+    if spread_info and exec_price is not None:
+        side = "Ask" if decision["final_decision"] == "BUY" else (
+            "Bid" if decision["final_decision"] == "SELL" else "mid"
+        )
+        parts.append(
+            f"💱 Prix d'exécution suggéré : **{exec_price:.4f}** ({side}) — "
+            f"Bid {spread_info['bid']:.4f} / Ask {spread_info['ask']:.4f} · "
+            f"Spread {spread_info['spread_pips']:.1f} pips ({spread_info['quality']})."
+        )
 
     if decision["decision_blocked"]:
         parts.append(
@@ -197,6 +209,23 @@ with st.expander("⚠️ Risque", expanded=True):
         exposure_level = st.slider("Niveau d'exposition (0-1)", 0.0, 1.0,
                                    value=float(P("exposure_level", 0.65)), step=0.05)
 
+with st.expander("💧 Liquidité du marché (spread)", expanded=False):
+    col_s1, col_s2 = st.columns([1, 2])
+    with col_s1:
+        spread_multiplier = st.slider(
+            "Conditions de marché", 0.5, 3.0,
+            value=float(P("spread_multiplier", 1.0)), step=0.1,
+            help="1.0 = spread normal · <1 = marché très liquide · "
+                 ">1.5 = marché stressé (spread élargi)",
+        )
+    with col_s2:
+        st.caption(
+            "Le **spread Bid/Ask** est calculé à partir d'une fourchette typique par paire "
+            "(EUR/USD ≈ 1 pip, paires TND ≈ 15-25 pips), multipliée par ce facteur. "
+            "Spread serré → bonus sur le score Forex (+0.10) ; spread élargi → "
+            "pénalité (-0.15 à -0.30) car liquidité dégradée et coût d'exécution accru."
+        )
+
 with st.expander("📋 Conformité réglementaire", expanded=True):
     col_c1, col_c2, col_c3, col_c4 = st.columns(4)
     with col_c1:
@@ -223,21 +252,31 @@ analyse = st.button("🚀 **Analyser l'opération**", type="primary", width='str
 # 3) ANALYSE
 # ==========================================================
 if analyse:
-    # Marché — historique réel via yfinance (cache 1h). Si yfinance ne renvoie
-    # rien (paire indisponible ou réseau down), on retombe sur le taux de base
-    # simulé pour ne pas bloquer la démo jury.
+    # Marché — historique daily réel via Yahoo Chart API (cache 60 s) pour les
+    # indicateurs techniques + prix temps réel pour le mid. Si Yahoo ne renvoie
+    # rien (paire indisponible ou réseau down), on retombe sur le taux simulé
+    # pour ne pas bloquer la démo.
     df = fetch_history_ohlc(pair, period="3mo")
+    live_price, live_source, live_ts = fetch_realtime_price(pair)
     if df.empty:
         st.warning(
-            f"yfinance n'a pas retourné de données pour {pair}. Utilisation d'une "
+            f"Yahoo n'a pas retourné d'historique pour {pair}. Utilisation d'une "
             f"valeur de référence simulée — l'analyse Forex sera neutre.",
             icon="⚠️",
         )
-        history = [SIMULATED_BASE_PRICES.get(pair, 1.0)]
+        history = [live_price or SIMULATED_BASE_PRICES.get(pair, 1.0)]
     else:
         history = df["Close"].tolist()
+        if live_price is not None:
+            # On remplace le dernier point par le prix temps réel pour que
+            # current_rate, MA et signal Forex utilisent le tick le plus frais.
+            history = history[:-1] + [float(live_price)]
 
     current_rate = float(history[-1])
+
+    # Bid / Ask / Spread autour du mid (current_rate). Le multiplier permet
+    # à l'utilisateur de simuler un marché stressé (spread élargi).
+    spread_info = compute_bid_ask(pair, current_rate, spread_multiplier=spread_multiplier)
 
     # Position après l'opération (impact sur conformité)
     base = pair.split("/")[0]
@@ -245,9 +284,9 @@ if analyse:
     pos_eur_after = position_eur + (delta if base == "EUR" else 0)
     pos_usd_after = position_usd + (delta if base == "USD" else 0)
 
-    # Appel des modules
+    # Appel des modules — spread_info embarque l'ajustement liquidité.
     forex_mod = ForexAnalysisModule()
-    forex_result = forex_mod.generate_signal(current_rate, history)
+    forex_result = forex_mod.generate_signal(current_rate, history, spread_info=spread_info)
 
     treasury_mod = TreasuryManagementModule()
     treasury_result = treasury_mod.evaluate_treasury_position(
@@ -269,6 +308,9 @@ if analyse:
         forex_result, treasury_result, risk_result, compliance_result,
     )
 
+    # Prix d'exécution selon la décision : BUY → Ask, SELL → Bid, HOLD → mid.
+    exec_price = execution_price(spread_info, decision["final_decision"])
+
     # Persister pour la page Rapport
     st.session_state["last_simulation"] = {
         "operation": {"amount": amount, "pair": pair, "direction": direction, "horizon": horizon},
@@ -278,6 +320,8 @@ if analyse:
         "compliance": compliance_result,
         "decision": decision,
         "position_after": {"eur": pos_eur_after, "usd": pos_usd_after},
+        "spread": spread_info,
+        "exec_price": exec_price,
     }
 
     # Historique des simulations (item #12) — FIFO, max 50 entrées
@@ -300,6 +344,46 @@ if analyse:
     render_decision_badge(decision["final_decision"])
     if decision["decision_blocked"]:
         render_blocked_banner(decision["blocking_reasons"])
+
+    # --- Cotation Bid / Ask / Spread + prix d'exécution ---
+    st.markdown("#### 💱 Cotation et prix d'exécution")
+    col_q1, col_q2, col_q3, col_q4 = st.columns(4)
+    with col_q1:
+        render_module_card(
+            "Bid (vente)",
+            f"{spread_info['bid']:.4f}",
+            "Le trader vend à ce prix",
+        )
+    with col_q2:
+        render_module_card(
+            "Ask (achat)",
+            f"{spread_info['ask']:.4f}",
+            "Le trader achète à ce prix",
+        )
+    with col_q3:
+        render_module_card(
+            "Spread",
+            f"{spread_info['spread_pips']:.1f} pips",
+            f"{spread_info['quality']} (×{spread_info['ratio']:.2f})",
+        )
+    with col_q4:
+        side_label = {"BUY": "Ask", "SELL": "Bid", "HOLD": "—"}.get(
+            decision["final_decision"], "mid"
+        )
+        exec_text = f"{exec_price:.4f}" if exec_price is not None else "—"
+        render_module_card(
+            f"Prix d'exécution ({side_label})",
+            exec_text,
+            f"Décision : {decision['final_decision']}",
+        )
+    if decision["final_decision"] in ("BUY", "SELL") and exec_price is not None:
+        notional = amount * exec_price
+        cost_spread = amount * spread_info["spread"] / 2.0
+        st.caption(
+            f"💼 Notional estimé : **{notional:,.2f}** "
+            f"(devise cotée) · Coût implicite du spread "
+            f"(½ aller) : **{cost_spread:,.2f}**."
+        )
 
     col_g1, col_g2 = st.columns(2)
     with col_g1:
@@ -380,7 +464,8 @@ if analyse:
     # --- Narratif détaillé ---
     st.markdown("#### 📝 Interprétation détaillée")
     narrative = build_narrative(amount, direction, pair, horizon, decision,
-                                forex_result, treasury_result, risk_result, compliance_result)
+                                forex_result, treasury_result, risk_result, compliance_result,
+                                spread_info=spread_info, exec_price=exec_price)
     st.info(narrative, icon="💬")
 
 elif "last_simulation" in st.session_state:

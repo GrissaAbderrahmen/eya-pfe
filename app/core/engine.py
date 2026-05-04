@@ -135,7 +135,13 @@ class ForexAnalysisModule:
         long_ma = self.calculate_moving_average(prices, long_period)
         return round(short_ma - long_ma, 6)
 
-    def generate_signal(self, current_rate, prices):
+    def generate_signal(self, current_rate, prices, spread_info=None):
+        """Calcule le signal Forex à partir des indicateurs techniques.
+
+        Si `spread_info` (dict issu de spread.compute_bid_ask) est fourni, son
+        ajustement de score est embarqué dans le résultat sous la clé
+        `spread_adjustment` et appliqué dans le moteur de décision.
+        """
         ma = self.calculate_moving_average(prices, period=5)
         vol = self.calculate_volatility(prices, period=10)
         rsi = self.calculate_rsi(prices, period=14)
@@ -168,7 +174,7 @@ class ForexAnalysisModule:
         else:
             signal = "HOLD"
 
-        return {
+        result = {
             "current_rate": round(current_rate, 4),
             "moving_average": round(ma, 4),
             "volatility": vol,
@@ -177,6 +183,15 @@ class ForexAnalysisModule:
             "signal": signal,
             "signal_score": score,
         }
+        if spread_info is not None:
+            # L'ajustement (∈ [-0.30, +0.10]) est appliqué dans
+            # AIDecisionEngine._normalize_forex après normalisation du score.
+            result["spread_adjustment"] = spread_info.get("score_adjustment", 0.0)
+            result["spread_quality"] = spread_info.get("quality")
+            result["spread_pips"] = spread_info.get("spread_pips")
+            result["bid"] = spread_info.get("bid")
+            result["ask"] = spread_info.get("ask")
+        return result
 
 
 # =========================================================
@@ -338,7 +353,17 @@ class AIDecisionEngine:
         # pour que les cas typiques (2 règles alignées) saturent à ±1.0.
         # Forex contribue alors jusqu'à ±0.4 (au lieu de ±0.2 avant).
         score = forex_result.get("signal_score", 0)
-        return max(-1.0, min(1.0, score / 2.0))
+        base = max(-1.0, min(1.0, score / 2.0))
+        # Ajustement liquidité (spread bid/ask). Spread serré → bonus, spread
+        # élargi → pénalité (marché moins liquide, exécution dégradée).
+        # Range typique : [-0.30, +0.10]. Appliqué dans le sens du signal :
+        # en SELL, un spread large pénalise aussi le signal négatif.
+        adj = forex_result.get("spread_adjustment", 0.0)
+        if base >= 0:
+            adjusted = base + adj
+        else:
+            adjusted = base - adj  # symétrie : pénalité réduit |score|
+        return max(-1.0, min(1.0, adjusted))
 
     def _normalize_treasury(self, treasury_result):
         # Normalisation continue (2026-04 v3) : si cash_factor et liquidity_factor

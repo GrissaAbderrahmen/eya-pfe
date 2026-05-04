@@ -49,6 +49,71 @@ def price_history_chart(prices: list, moving_average: float | None = None,
     return fig
 
 
+def yahoo_style_chart(df: pd.DataFrame, pair: str = "EUR/USD",
+                      timeframe: str = "3M") -> go.Figure:
+    """Graphique inspiré de Yahoo Finance : courbe de prix avec aire remplie,
+    couleur conditionnelle (vert si la période finit en hausse, rouge sinon).
+    """
+    if df is None or df.empty:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="Aucune donnée disponible — vérifiez la paire ou réessayez",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+        )
+        fig.update_layout(height=380, margin=dict(l=20, r=20, t=40, b=40))
+        return fig
+
+    closes = df["Close"]
+    first, last = float(closes.iloc[0]), float(closes.iloc[-1])
+    is_up = last >= first
+    line_color = COLORS["success"] if is_up else COLORS["danger"]
+    fill_rgba = "rgba(40, 167, 69, 0.15)" if is_up else "rgba(220, 53, 69, 0.15)"
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df.index, y=closes,
+            mode="lines",
+            name=pair,
+            line=dict(color=line_color, width=2),
+            fill="tozeroy",
+            fillcolor=fill_rgba,
+            hovertemplate="<b>%{x|%d %b %Y %H:%M}</b><br>" + pair + " : %{y:.4f}<extra></extra>",
+        )
+    )
+
+    # Ligne d'ouverture de la période (référence Yahoo)
+    fig.add_hline(
+        y=first, line_dash="dot", line_color=COLORS["neutral"], opacity=0.5,
+        annotation_text=f"Open {first:.4f}",
+        annotation_position="bottom right",
+        annotation_font_size=10,
+    )
+
+    delta_pct = (last - first) / first * 100 if first else 0.0
+    arrow = "▲" if delta_pct >= 0 else "▼"
+    title = (
+        f"{pair} · {last:.4f} "
+        f"<span style='color:{line_color}'>{arrow} {delta_pct:+.2f}%</span> "
+        f"<span style='color:#6C757D; font-size:0.85em'>· {timeframe}</span>"
+    )
+
+    # Pour 1D (intraday), masquer les heures non-tradées via rangebreaks.
+    xaxis_cfg = dict(showgrid=True, gridcolor="#EFE9E5", rangeslider=dict(visible=False))
+
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=16)),
+        height=380,
+        margin=dict(l=20, r=20, t=60, b=40),
+        plot_bgcolor="white",
+        hovermode="x unified",
+        showlegend=False,
+        xaxis=xaxis_cfg,
+        yaxis=dict(showgrid=True, gridcolor="#EFE9E5", side="right"),
+    )
+    return fig
+
+
 def candlestick_chart(df: pd.DataFrame, pair: str = "EUR/USD",
                       moving_average: pd.Series | None = None) -> go.Figure:
     """Vrai graphique en chandeliers japonais (OHLC) à partir d'un DataFrame yfinance.

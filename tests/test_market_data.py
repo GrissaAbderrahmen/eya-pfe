@@ -1,4 +1,4 @@
-"""Tests pour la couche market_data (yfinance + cache)."""
+"""Tests pour la couche market_data (Yahoo Chart API + cache)."""
 
 import os
 import sys
@@ -20,20 +20,19 @@ def test_pairs_consistency():
 
 
 def test_fetch_history_returns_ohlc_columns():
-    """Mock yf.download et vérifie qu'on récupère les 4 colonnes OHLC."""
+    """Mock _fetch_yahoo_chart et vérifie qu'on récupère les 4 colonnes OHLC."""
     fake_df = pd.DataFrame(
         {
             "Open": [1.0, 1.01, 1.02],
             "High": [1.05, 1.06, 1.07],
             "Low": [0.99, 1.00, 1.01],
             "Close": [1.02, 1.03, 1.04],
-            "Volume": [1000, 1100, 1200],
         },
         index=pd.date_range("2026-01-01", periods=3, freq="D"),
     )
-    market_data.fetch_history_ohlc.clear()  # vide le cache
-    with patch.object(market_data, "yf") as mock_yf:
-        mock_yf.download.return_value = fake_df
+    market_data.fetch_history_ohlc.clear()
+    with patch.object(market_data, "_fetch_yahoo_chart",
+                      return_value=(fake_df, {"regularMarketPrice": 1.04})):
         result = market_data.fetch_history_ohlc("EUR/USD", period="3mo")
     assert list(result.columns) == ["Open", "High", "Low", "Close"]
     assert len(result) == 3
@@ -45,10 +44,11 @@ def test_fetch_history_unknown_pair_returns_empty():
     assert result.empty
 
 
-def test_fetch_history_handles_yfinance_failure_uses_csv_bundle():
-    """Si yfinance échoue, le CSV bundlé doit prendre le relais."""
+def test_fetch_history_handles_yahoo_failure_uses_csv_bundle():
+    """Si Yahoo échoue, le CSV bundlé doit prendre le relais."""
     market_data.fetch_history_ohlc.clear()
-    with patch.object(market_data, "_try_yfinance", return_value=pd.DataFrame()):
+    with patch.object(market_data, "_fetch_yahoo_chart",
+                      return_value=(pd.DataFrame(), {})):
         result = market_data.fetch_history_ohlc("EUR/USD", period="3mo")
     # Le CSV bundlé existe pour EUR/USD → résultat non-vide
     assert not result.empty
@@ -56,32 +56,43 @@ def test_fetch_history_handles_yfinance_failure_uses_csv_bundle():
 
 
 def test_fetch_history_returns_empty_when_all_sources_fail():
-    """Si yfinance ET CSV bundlé échouent, on retourne un DataFrame vide."""
+    """Si Yahoo ET CSV bundlé échouent, on retourne un DataFrame vide."""
     market_data.fetch_history_ohlc.clear()
-    with patch.object(market_data, "_try_yfinance", return_value=pd.DataFrame()), \
-         patch.object(market_data, "_load_bundled_csv", return_value=pd.DataFrame()):
+    with patch.object(market_data, "_fetch_yahoo_chart",
+                      return_value=(pd.DataFrame(), {})), \
+         patch.object(market_data, "_load_bundled_csv",
+                      return_value=pd.DataFrame()):
         result = market_data.fetch_history_ohlc("EUR/USD", period="3mo")
     assert result.empty
 
 
-def test_fetch_latest_rate_falls_back_to_simulation():
-    """Si yfinance ET CSV échouent, fallback simulé."""
-    market_data.fetch_history_ohlc.clear()
-    with patch.object(market_data, "_try_yfinance", return_value=pd.DataFrame()), \
-         patch.object(market_data, "_load_bundled_csv", return_value=pd.DataFrame()):
-        rate, source = market_data.fetch_latest_rate("EUR/TND")
+def test_fetch_realtime_price_falls_back_to_simulation():
+    """Si Yahoo ne retourne pas de regularMarketPrice, fallback simulé."""
+    market_data.fetch_realtime_price.clear()
+    with patch.object(market_data, "_fetch_yahoo_chart",
+                      return_value=(pd.DataFrame(), {})):
+        rate, source, _ts = market_data.fetch_realtime_price("EUR/TND")
     assert source == "SIMULATION"
     assert rate == SIMULATED_BASE_PRICES["EUR/TND"]
 
 
-def test_fetch_latest_rate_uses_yfinance_when_available():
-    fake_df = pd.DataFrame(
-        {"Open": [1.0], "High": [1.0], "Low": [1.0], "Close": [3.42]},
-        index=pd.date_range("2026-04-25", periods=1, freq="D"),
-    )
-    market_data.fetch_history_ohlc.clear()
-    with patch.object(market_data, "yf") as mock_yf:
-        mock_yf.download.return_value = fake_df
-        rate, source = market_data.fetch_latest_rate("EUR/TND")
+def test_fetch_realtime_price_uses_yahoo_when_available():
+    market_data.fetch_realtime_price.clear()
+    meta = {"regularMarketPrice": 3.42, "regularMarketTime": 1730000000}
+    with patch.object(market_data, "_fetch_yahoo_chart",
+                      return_value=(pd.DataFrame(), meta)):
+        rate, source, ts = market_data.fetch_realtime_price("EUR/TND")
     assert source == "API"
     assert rate == 3.42
+    assert ts is not None
+
+
+def test_fetch_latest_rate_compat_wrapper():
+    """fetch_latest_rate délègue à fetch_realtime_price (rétro-compat)."""
+    market_data.fetch_realtime_price.clear()
+    meta = {"regularMarketPrice": 1.0925, "regularMarketTime": 1730000000}
+    with patch.object(market_data, "_fetch_yahoo_chart",
+                      return_value=(pd.DataFrame(), meta)):
+        rate, source = market_data.fetch_latest_rate("EUR/USD")
+    assert source == "API"
+    assert rate == 1.0925

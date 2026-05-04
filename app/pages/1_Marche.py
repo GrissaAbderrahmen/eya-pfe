@@ -10,7 +10,14 @@ import streamlit as st
 
 from app.core.bct_scraper import compare_with_yfinance, fetch_bct_rates
 from app.core.engine import ForexAnalysisModule
-from app.core.market_data import fetch_history_ohlc, get_data_source
+from app.core.market_data import (
+    TIMEFRAMES,
+    fetch_history_by_timeframe,
+    fetch_history_ohlc,
+    fetch_realtime_price,
+    get_data_source,
+)
+from app.core.spread import compute_bid_ask
 from app.core.yfinance_pairs import PAIRS
 from components.branding import (
     COLORS,
@@ -19,7 +26,7 @@ from components.branding import (
     render_header,
     render_module_card,
 )
-from components.charts import candlestick_chart, rsi_indicator
+from components.charts import candlestick_chart, rsi_indicator, yahoo_style_chart
 
 st.set_page_config(page_title="Marché", page_icon="📈", layout="wide")
 inject_global_css()
@@ -34,7 +41,7 @@ if "ohlc_cache" not in st.session_state:
     st.session_state.ohlc_cache = {}
 
 # ---- Contrôles ----
-col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 1, 1])
+col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 2, 1])
 with col_ctrl1:
     pair = st.selectbox(
         "Paire de devises",
@@ -43,23 +50,41 @@ with col_ctrl1:
         help="Toutes les paires sont récupérées en données réelles via Yahoo Finance.",
     )
 with col_ctrl2:
-    period = st.selectbox(
-        "Période",
-        options=["1mo", "3mo", "6mo", "1y"],
-        index=1,
-        format_func=lambda p: {"1mo": "1 mois", "3mo": "3 mois", "6mo": "6 mois", "1y": "1 an"}[p],
+    chart_type = st.radio(
+        "Type de graphique",
+        options=["Ligne (Yahoo)", "Bougies"],
+        index=0,
+        horizontal=True,
+        help="Vue ligne style Yahoo Finance ou chandeliers japonais OHLC.",
     )
 with col_ctrl3:
     st.markdown(" ")
     refresh = st.button("🔄 Rafraîchir", type="primary", width='stretch',
                         help="Recharge les données yfinance (cache 1 h).")
 
+# ---- Sélecteur de timeframe (style Yahoo Finance) ----
+timeframe_keys = list(TIMEFRAMES.keys())  # ["1D", "1W", "1M", "3M", "6M", "1Y"]
+timeframe = st.radio(
+    "Période",
+    options=timeframe_keys,
+    index=timeframe_keys.index("3M"),
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
 if refresh:
-    fetch_history_ohlc.clear()  # vide le cache pour forcer un re-fetch
+    fetch_history_ohlc.clear()
+    fetch_history_by_timeframe.clear()
+    fetch_realtime_price.clear()
 
 # ---- Récupération données ----
-df = fetch_history_ohlc(pair, period=period)
-st.session_state.ohlc_cache[pair] = df
+df = fetch_history_by_timeframe(pair, timeframe=timeframe)
+# On garde aussi un historique daily pour les indicateurs techniques (RSI/MACD
+# nécessitent au minimum 14 points), indépendamment du timeframe choisi.
+df_indic = fetch_history_ohlc(pair, period="3mo")
+if df_indic.empty:
+    df_indic = df
+st.session_state.ohlc_cache[pair] = df_indic
 
 if df.empty:
     st.error(
@@ -70,21 +95,37 @@ if df.empty:
     render_footer()
     st.stop()
 
-closes = df["Close"].tolist()
-current_rate = float(df["Close"].iloc[-1])
+closes = df_indic["Close"].tolist()
+# Prix temps réel : on prend regularMarketPrice (live) plutôt que le dernier
+# Close du DataFrame qui peut avoir 5-15 minutes de retard.
+live_price, live_source, live_ts = fetch_realtime_price(pair)
+current_rate = float(live_price) if live_price else float(df["Close"].iloc[-1])
 prev_rate = float(df["Close"].iloc[-2]) if len(df) > 1 else current_rate
 delta_pct = (current_rate - prev_rate) / prev_rate * 100 if prev_rate else 0.0
+
+# ---- Calcul Bid / Ask / Spread (mid = prix temps réel) ----
+spread_info = compute_bid_ask(pair, current_rate)
 
 # ---- Badge source + dernier prix ----
 source = get_data_source(pair)
 source_color = {
-    "yfinance": COLORS["success"],
+    "Yahoo Finance": COLORS["success"],
     "CSV bundlé": COLORS["warning"],
     "simulation": COLORS["danger"],
 }.get(source, COLORS["neutral"])
+freshness = ""
+if live_ts is not None:
+    from datetime import datetime as _dt, timezone as _tz
+    age_s = (_dt.now(_tz.utc) - live_ts).total_seconds()
+    if age_s < 60:
+        freshness = f" · maj il y a {int(age_s)}s"
+    elif age_s < 3600:
+        freshness = f" · maj il y a {int(age_s/60)} min"
+    else:
+        freshness = f" · maj {live_ts.strftime('%H:%M')} UTC"
 source_caption = {
-    "yfinance": f"{len(df)} jours d'historique temps réel",
-    "CSV bundlé": f"{len(df)} jours — Yahoo rate-limited, fallback CSV (1 an pré-téléchargé)",
+    "Yahoo Finance": f"{len(df)} bougies · timeframe {timeframe}{freshness}",
+    "CSV bundlé": f"{len(df)} bougies — fallback CSV (Yahoo indisponible)",
     "simulation": "Données simulées — toutes les sources externes sont indisponibles",
 }.get(source, "")
 
@@ -116,11 +157,56 @@ with col_c:
         unsafe_allow_html=True,
     )
 
-# ---- Graphique candlestick ----
-forex = ForexAnalysisModule()
-ma_series = df["Close"].rolling(window=5, min_periods=1).mean()
+# ---- Bandeau Bid / Ask / Spread (style salle de marché) ----
+st.subheader("💱 Cotation Bid / Ask / Spread")
+col_bid, col_ask, col_spread, col_quality = st.columns(4)
+with col_bid:
+    render_module_card(
+        "Bid (vente client)",
+        f"{spread_info['bid']:.4f}",
+        "Prix auquel le trader VEND",
+    )
+with col_ask:
+    render_module_card(
+        "Ask (achat client)",
+        f"{spread_info['ask']:.4f}",
+        "Prix auquel le trader ACHÈTE",
+    )
+with col_spread:
+    render_module_card(
+        "Spread",
+        f"{spread_info['spread_pips']:.1f} pips",
+        f"= {spread_info['spread']:.6f} ({spread_info['spread_pct']*100:.4f} %)",
+    )
+with col_quality:
+    quality_color = {
+        "Très liquide": COLORS["success"],
+        "Liquide": COLORS["success"],
+        "Élargi": COLORS["warning"],
+        "Peu liquide": COLORS["danger"],
+    }.get(spread_info["quality"], COLORS["neutral"])
+    render_module_card(
+        "Liquidité",
+        spread_info["quality"],
+        f"Spread vs typique : ×{spread_info['ratio']:.2f}",
+    )
+st.caption(
+    "ℹ️ **Bid / Ask** simulés autour du mid-price (dernier Close yfinance) selon le "
+    "spread typique observé en salle de marché pour chaque paire — paires majeures "
+    "≈ 1-2 pips, paires TND ≈ 15-25 pips. **Spread = Ask − Bid** : il représente "
+    "le coût de transaction et l'illiquidité du marché."
+)
 
-st.plotly_chart(candlestick_chart(df, pair, moving_average=ma_series), width='stretch')
+# ---- Graphique style Yahoo Finance (ou bougies) ----
+forex = ForexAnalysisModule()
+
+if chart_type == "Bougies":
+    ma_series = df["Close"].rolling(window=5, min_periods=1).mean()
+    st.plotly_chart(candlestick_chart(df, pair, moving_average=ma_series),
+                    width='stretch')
+else:
+    st.plotly_chart(yahoo_style_chart(df, pair, timeframe=timeframe),
+                    width='stretch')
 
 # ---- Indicateurs techniques calculés sur le Close ----
 ma = forex.calculate_moving_average(closes, period=5)
@@ -201,14 +287,17 @@ if "TND" in pair:
                 )
             st.caption(f"Source : {bct_rates.get('_source', 'BCT')}")
 
-# ---- Tableau OHLC (30 derniers jours) ----
-st.subheader("Données OHLC quotidiennes")
+# ---- Tableau OHLC ----
+is_intraday = timeframe == "1D"
+st.subheader("Données OHLC " + ("intraday (horaire)" if is_intraday else "quotidiennes"))
 st.caption(
-    "Open / High / Low / Close — base de calcul des indicateurs techniques (RSI, MACD, MA). "
-    "30 derniers jours, du plus récent au plus ancien."
+    "Open / High / Low / Close — du plus récent au plus ancien. "
+    + ("Bougies horaires sur la dernière séance." if is_intraday
+       else "Base de calcul des indicateurs techniques (RSI, MACD, MA).")
 )
 ohlc_display = df.tail(30).iloc[::-1].copy()
-ohlc_display.index = ohlc_display.index.strftime("%Y-%m-%d")
+fmt = "%Y-%m-%d %H:%M" if is_intraday else "%Y-%m-%d"
+ohlc_display.index = ohlc_display.index.strftime(fmt)
 ohlc_display = ohlc_display.round(4)
 st.dataframe(
     ohlc_display,
